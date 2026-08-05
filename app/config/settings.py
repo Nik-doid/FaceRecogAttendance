@@ -55,8 +55,8 @@ class Settings(BaseSettings):
 
     # --- AI models -----------------------------------------------------------
     models_dir: Path = APP_ROOT / "models"
-    detect_model: str = "scrfd_10g_bnkps"
-    recognize_model: str = "w600k_r50"
+    detect_model: str = "det_10g.onnx"
+    recognize_model: str = "w600k_r50.onnx"
     silentface_model_path: Path | None = None
     onnx_providers: Annotated[list[str], NoDecode] = [
         "CUDAExecutionProvider",

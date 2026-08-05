@@ -110,8 +110,8 @@ The workflow is: **enroll photos → boot → build index → start camera → w
    ```bash
    uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
    # in another terminal:
-   curl http://localhost:8000/health
-   curl http://localhost:8000/index/status        # repeat until size > 0
+   curl http://localhost:8000/api/v1/health
+   curl http://localhost:8000/api/v1/index/status   # repeat until size > 0
    ```
 
    `POST /index/rebuild` rebuilds later when you add photos, but startup already
@@ -126,26 +126,57 @@ The workflow is: **enroll photos → boot → build index → start camera → w
    Use it to start the camera:
 
    ```bash
-   curl -X POST http://localhost:8000/camera/start -H "Authorization: Bearer <token>"
+   curl -X POST http://localhost:8000/api/v1/camera/start -H "Authorization: Bearer <token>"
    ```
 
 6. **Face the camera.** Watch it work:
 
-   - `GET /camera/status` → `"running"`
-   - `GET /recognition/logs` → matched events with confidence + `reported`
-   - `GET /unknown-faces` → unrecognized faces (each snapshotted)
+   - `GET /api/v1/camera/status` → `"running"`
+   - `GET /api/v1/recognition/logs` → matched events with confidence + `reported`
+   - `GET /api/v1/unknown-faces` → unrecognized faces (each snapshotted)
    - `storage/snapshots/attendance_*.jpg` → evidence images
-   - `GET /metrics` → `face_recognitions_total`, `face_unknown_faces_total`, …
-   - `POST /camera/stop` to halt.
+   - `GET /api/v1/metrics` → `face_recognitions_total`, `face_unknown_faces_total`, …
+   - `POST /api/v1/camera/stop` to halt.
 
    Terminal logs are JSON with `event: recognition|unknown_face` markers.
-   `GET /recognition/logs?employee_code=EMP1` filters one person. Each employee
-   is reported at most once per `DUPLICATE_TIMEOUT_SECONDS` window.
+   `GET /api/v1/recognition/logs?employee_code=EMP1` filters one person. Each
+   employee is reported at most once per `DUPLICATE_TIMEOUT_SECONDS` window.
 
 > If the webcam won't open, try `CAMERA_DEVICE_INDEX=1`, or swap
 > `opencv-python-headless` for `opencv-python` (DirectShow capture) in
 > `pyproject.toml`. For a headless box without a camera, use an RTSP/IP cam with
 > `CAMERA_SOURCE=rtsp`.
+
+## Debug console (Streamlit UI)
+
+A browser UI that wraps the whole API for quick debugging — no curl or JWT
+handling by hand.
+
+```bash
+uv sync --extra frontend
+uv run streamlit run frontend/app.py
+# open http://localhost:8501
+```
+
+The console automatically signs a JWT with the same `JWT_SECRET_KEY` from `.env`,
+so every admin action works out of the box against `http://localhost:8000`.
+
+What it can do (sidebar → page radio):
+
+- **Dashboard** — live health/index/camera cards, start/stop the camera and
+  trigger an index rebuild with one click (auto-refresh while building)
+- **Enrollment** — pick an employee code + upload a face photo; it saves the file
+  into the right `uploads/employees/<code>/` folder and lets you rebuild the index
+  from the same page (previews of current enrollments included)
+- **Recognition Logs / Unknown Faces** — filterable tables plus JPEG snapshot
+  previews pulled straight from the server's `storage/snapshots/`
+- **Metrics** — key Prometheus counters as cards + the raw exposition text
+- **API Console** — arbitrary `GET/POST/...` requests against `/api/v1` with the
+  generated bearer token, for poking at anything the UI doesn't cover
+
+If the service runs on another host, change the **API base URL** in the sidebar
+and paste a token issued by that deployment (the console can't sign tokens for a
+different secret).
 
 ## Employee photos
 
@@ -226,17 +257,17 @@ Full reference in [`.env.example`](.env.example). Key groups:
 
 ## API
 
-| Method | Path                     | Auth  | Description                                    |
-|--------|--------------------------|-------|------------------------------------------------|
-| GET    | `/health`                | –     | Service/db/camera/index liveness               |
-| GET    | `/metrics`               | –     | Prometheus metrics                             |
-| GET    | `/index/status`          | –     | Index size, employees, last build              |
-| POST   | `/index/rebuild`         | JWT   | Rebuild embeddings from photo tree (background)|
-| GET    | `/camera/status`         | –     | Camera worker status                           |
-| POST   | `/camera/start`          | JWT   | Start recognition loop (rate-limited)          |
-| POST   | `/camera/stop`           | JWT   | Stop recognition loop (rate-limited)           |
-| GET    | `/recognition/logs`      | –     | Recent recognition events (filter by employee) |
-| GET    | `/unknown-faces`         | –     | Recent unknown-face events                     |
+| Method | Path                           | Auth  | Description                                    |
+|--------|--------------------------------|-------|------------------------------------------------|
+| GET    | `/api/v1/health`               | –     | Service/db/camera/index liveness               |
+| GET    | `/api/v1/metrics`              | –     | Prometheus metrics                             |
+| GET    | `/api/v1/index/status`         | –     | Index size, employees, last build              |
+| POST   | `/api/v1/index/rebuild`        | JWT   | Rebuild embeddings from photo tree (background)|
+| GET    | `/api/v1/camera/status`        | –     | Camera worker status                           |
+| POST   | `/api/v1/camera/start`         | JWT   | Start recognition loop (rate-limited)          |
+| POST   | `/api/v1/camera/stop`          | JWT   | Stop recognition loop (rate-limited)           |
+| GET    | `/api/v1/recognition/logs`     | –     | Recent recognition events (filter by employee) |
+| GET    | `/api/v1/unknown-faces`        | –     | Recent unknown-face events                     |
 
 Admin endpoints require `Authorization: Bearer <jwt>` where the JWT is issued by
 the ops/attendance tooling with `sub = <operator>` and signed with
@@ -262,7 +293,7 @@ docker compose up -d --build
 
 Mount a volume with the employee photos tree at `./uploads/employees`
 (`EMPLOYEE_PHOTOS_SOURCE`), set a strong `JWT_SECRET_KEY` and the camera URL in
-`.env`, then `POST /camera/start` with a valid token to begin recognition.
+`.env`, then `POST /api/v1/camera/start` with a valid token to begin recognition.
 
 ## Own database
 

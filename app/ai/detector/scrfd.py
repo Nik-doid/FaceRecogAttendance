@@ -1,15 +1,20 @@
-"""SCRFD face detector via the InsightFace model zoo.
+"""SCRFD face detector via the InsightFace ONNX implementation.
 
-Uses ``scrfd_10g_bnkps`` (ONNX) which returns bounding boxes + 5-point landmarks
-in one pass. Detection is decoupled from recognition: this class never computes
-embeddings, so the recognition model stays a separate loaded artifact.
+Uses ``det_10g.onnx`` (SCRFD-10g from the ``buffalo_l`` pack) which returns
+bounding boxes + 5-point landmarks in one pass. Detection is decoupled from
+recognition: this class never computes embeddings, so the recognition model stays
+a separate loaded artifact.
+
+The model is loaded through the concrete ``SCRFD`` class (not
+``model_zoo.get_model``, which can silently return ``None`` and routes SCRFD
+architectures to the wrong wrapper).
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from app.ai._loader import import_optional
+from app.ai._loader import filter_providers, import_optional, resolve_model_file
 from app.ai.detector.base import Detector
 from app.ai.types import DetectedFace
 
@@ -17,7 +22,7 @@ from app.ai.types import DetectedFace
 class SCRFDDetector(Detector):
     def __init__(
         self,
-        model_name: str = "scrfd_10g_bnkps",
+        model_name: str = "det_10g.onnx",
         providers: list[str] | None = None,
         input_size: int = 640,
         max_num: int = 10,
@@ -25,22 +30,28 @@ class SCRFDDetector(Detector):
         models_dir: str | None = None,
     ) -> None:
         insightface = import_optional("insightface")
-        kwargs: dict[str, object] = {"providers": providers or []}
-        if models_dir:
-            kwargs["root"] = models_dir
-        self._model = insightface.model_zoo.get_model(model_name, **kwargs)
+        model_file = resolve_model_file(model_name, models_dir)
+        self._model = insightface.model_zoo.SCRFD(model_file=model_file)
+        self._model.det_thresh = det_thresh
+        available = filter_providers(providers)
+        if available:
+            self._model.session.set_providers(available)
         self._input_size = input_size
         self._max_num = max_num
         self._det_thresh = det_thresh
 
     def detect(self, image_bgr: np.ndarray) -> list[DetectedFace]:
-        bboxes, kpss = self._model.detect(
-            image_bgr,
-            input_size=self._input_size,
-            max_num=self._max_num,
-            metric="default",
-            det_thresh=self._det_thresh,
-        )
+        try:
+            bboxes, kpss = self._model.detect(
+                image_bgr,
+                input_size=(self._input_size, self._input_size),
+                max_num=self._max_num,
+                metric="default",
+            )
+        except ValueError:
+            # SCRFD raises when no detection survives the threshold (empty
+            # scores/bboxes lists in forward); treat as a frame with no faces.
+            return []
         faces: list[DetectedFace] = []
         if bboxes is None or len(bboxes) == 0:
             return faces

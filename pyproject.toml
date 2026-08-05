@@ -35,6 +35,11 @@ ai = [
     "onnxruntime>=1.18,<2.0",
     "insightface>=0.7.3,<1.0",
 ]
+# Local debugging / ops UI (Streamlit). Not installed by the service Docker image.
+frontend = [
+    "streamlit>=1.36,<2.0",
+    "requests>=2.32,<3.0",
+]
 
 [dependency-groups]
 dev = [

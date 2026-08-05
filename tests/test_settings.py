@@ -17,7 +17,7 @@ def test_comma_separated_lists_parsed() -> None:
 
 
 def test_defaults() -> None:
-    s = Settings()
+    s = Settings(_env_file=None)
     assert s.frame_skip == 2
     assert s.recognition_threshold == 0.60
     assert s.camera_id == "cam-01"

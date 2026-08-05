@@ -1,32 +1,36 @@
-"""ArcFace embedding via the InsightFace model zoo (ONNX).
+"""ArcFace embedding via the InsightFace ONNX implementation.
 
-Uses ``w600k_r50`` (ArcFace, 512-d) which is the recognition component of the
+Uses ``w600k_r50.onnx`` (ArcFace, 512-d) which is the recognition component of the
 ``buffalo_l`` pack. Landmark-based alignment (``norm_crop``) is applied before the
 forward pass, which is what makes the embeddings robust to head pose within the
 quality-gate limits.
+
+Loaded through the concrete ``ArcFaceONNX`` class rather than
+``model_zoo.get_model``, which can silently return ``None``.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from app.ai._loader import import_optional
+from app.ai._loader import filter_providers, import_optional, resolve_model_file
 from app.ai.recognizer.base import Recognizer
 
 
 class ArcFaceRecognizer(Recognizer):
     def __init__(
         self,
-        model_name: str = "w600k_r50",
+        model_name: str = "w600k_r50.onnx",
         providers: list[str] | None = None,
         image_size: int = 112,
         models_dir: str | None = None,
     ) -> None:
         insightface = import_optional("insightface")
-        kwargs: dict[str, object] = {"providers": providers or []}
-        if models_dir:
-            kwargs["root"] = models_dir
-        self._model = insightface.model_zoo.get_model(model_name, **kwargs)
+        model_file = resolve_model_file(model_name, models_dir)
+        self._model = insightface.model_zoo.ArcFaceONNX(model_file=model_file)
+        available = filter_providers(providers)
+        if available:
+            self._model.session.set_providers(available)
         self._image_size = image_size
         self._face_align = insightface.utils.face_align
 
