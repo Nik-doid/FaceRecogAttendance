@@ -1,0 +1,68 @@
+# Face Recognition Service stack.
+#
+#   docker compose up -d postgres rabbitmq
+#   docker compose up -d --build app
+#
+# The app container runs alembic migrations on startup, builds the face index from
+# EMPLOYEE_PHOTOS_SOURCE, and starts the recognition worker if CAMERA_AUTOSTART=true.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: face
+      POSTGRES_PASSWORD: face
+      POSTGRES_DB: face_recognition
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U face -d face_recognition"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://face:face@postgres:5432/face_recognition
+      DATABASE_SYNC_URL: postgresql+psycopg://face:face@postgres:5432/face_recognition
+      ATTENDANCE_MQ_URL: amqp://guest:guest@rabbitmq:5672/
+      STORAGE_PATH: /data/storage
+      UNKNOWN_FACES_DIR: /data/storage/unknown_faces
+      SNAPSHOTS_DIR: /data/storage/snapshots
+      MODELS_DIR: /data/models
+    volumes:
+      - ${EMPLOYEE_PHOTOS_SOURCE:-./uploads/employees}:/data/uploads:ro
+      - appdata:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+volumes:
+  pgdata:
+  rabbitmqdata:
+  appdata:

@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# uv
+.venv/
+
+# Env
+.env
+
+# Runtime storage
+storage/
+snapshots/
+
+# Models downloaded at runtime
+models/
+!models/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+uvicorn.out.log
+uvicorn.err.log

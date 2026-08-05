@@ -1,0 +1,52 @@
+"""Camera control endpoint tests."""
+
+from __future__ import annotations
+
+from fastapi.testclient import TestClient
+
+from tests.conftest import use_fake_camera
+
+
+def test_camera_status_stopped(client: TestClient) -> None:
+    resp = client.get("/api/v1/camera/status")
+    assert resp.status_code == 200
+    assert resp.json()["camera_id"] == "cam-test"
+    assert resp.json()["status"] == "stopped"
+
+
+def test_camera_controls_require_auth(client: TestClient) -> None:
+    assert client.post("/api/v1/camera/start").status_code == 401
+    assert client.post("/api/v1/camera/stop").status_code == 401
+
+
+def test_camera_start_stop_flow(client: TestClient, container, auth_headers) -> None:
+    use_fake_camera(container)
+
+    start = client.post("/api/v1/camera/start", headers=auth_headers)
+    assert start.status_code == 200
+    assert start.json()["status"] == "running"
+
+    status = client.get("/api/v1/camera/status")
+    assert status.json()["status"] == "running"
+
+    # A second start must be refused while already running.
+    conflict = client.post("/api/v1/camera/start", headers=auth_headers)
+    assert conflict.status_code == 409
+
+    stop = client.post("/api/v1/camera/stop", headers=auth_headers)
+    assert stop.status_code == 200
+    assert stop.json()["status"] == "stopped"
+
+
+def test_camera_controls_audited(client: TestClient, container, auth_headers) -> None:
+    from app.database.session import sync_session
+    from app.repositories.audit_repo import AuditLogRepository
+
+    use_fake_camera(container)
+    client.post("/api/v1/camera/start", headers=auth_headers)
+    client.post("/api/v1/camera/stop", headers=auth_headers)
+
+    with sync_session() as session:
+        audit = AuditLogRepository().list_recent(session)
+    actions = {entry.action for entry in audit}
+    assert {"camera.start", "camera.stop"} <= actions
