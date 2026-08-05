@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import Response, StreamingResponse
 
 from app.api.deps import AdminDep, ContainerDep, db_session, run_db
 from app.core.security import rate_limit
@@ -26,6 +30,35 @@ async def camera_status(container: ContainerDep) -> CameraStatusResponse:
         status=status_str,
         last_connected_at=row.last_connected_at if row else None,
         last_error=row.last_error if row else None,
+    )
+
+
+@router.get("/camera/frame")
+async def camera_frame(container: ContainerDep) -> Response:
+    """Latest camera frame as JPEG (for polling previews)."""
+    jpeg = container.frame_buffer.latest()
+    if jpeg is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="no camera frame available — start the camera first",
+        )
+    return Response(content=jpeg, media_type="image/jpeg")
+
+
+@router.get("/camera/stream")
+async def camera_stream(container: ContainerDep) -> StreamingResponse:
+    """Motion JPEG stream for live previews (multipart/x-mixed-replace)."""
+
+    async def _frames() -> AsyncIterator[bytes]:
+        while True:
+            jpeg = container.frame_buffer.latest()
+            if jpeg is not None:
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+            await asyncio.sleep(0.05)
+
+    return StreamingResponse(
+        _frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
     )
 
 

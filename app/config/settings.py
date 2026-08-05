@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     silentface_threshold: float = 0.50
     tracking_enabled: bool = False
 
+    # --- Face quality gates --------------------------------------------------
+    quality_min_blur: float = 100.0
+    quality_min_lighting: float = 40.0
+    quality_max_lighting: float = 220.0
+    quality_max_roll_deg: float = 30.0
+
     # --- AI models -----------------------------------------------------------
     models_dir: Path = APP_ROOT / "models"
     detect_model: str = "det_10g.onnx"

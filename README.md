@@ -163,8 +163,10 @@ so every admin action works out of the box against `http://localhost:8000`.
 
 What it can do (sidebar → page radio):
 
-- **Dashboard** — live health/index/camera cards, start/stop the camera and
-  trigger an index rebuild with one click (auto-refresh while building)
+- **Dashboard** — live health/index/camera cards, a live camera view
+  (`/api/v1/camera/stream`), a recent-activity panel (last recognized + unknown
+  faces), start/stop the camera and trigger an index rebuild with one click
+  (auto-refresh while building)
 - **Enrollment** — pick an employee code + upload a face photo; it saves the file
   into the right `uploads/employees/<code>/` folder and lets you rebuild the index
   from the same page (previews of current enrollments included)

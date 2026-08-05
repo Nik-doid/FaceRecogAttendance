@@ -60,7 +60,13 @@ def load_ai_components(settings: Settings) -> AIComponents:
 
         liveness = _PassThroughLiveness()
 
-    quality = FaceQualityChecker(settings.minimum_face_size)
+    quality = FaceQualityChecker(
+        settings.minimum_face_size,
+        blur_threshold=settings.quality_min_blur,
+        min_lighting=settings.quality_min_lighting,
+        max_lighting=settings.quality_max_lighting,
+        max_roll_deg=settings.quality_max_roll_deg,
+    )
 
     return AIComponents(
         detector=detector,

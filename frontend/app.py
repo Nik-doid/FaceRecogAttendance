@@ -228,6 +228,47 @@ def page_dashboard(client: ApiClient) -> None:
         c4.metric("Index size", health.get("index_size"))
 
     st.divider()
+    st.markdown("#### 📷 Live camera")
+    running = bool(cam and cam.get("status") == "running")
+    if running:
+        stream_url = f"{client.base_url}/api/v1/camera/stream"
+        st.markdown(
+            f'<img src="{stream_url}" style="width:100%;border-radius:10px;'
+            'border:1px solid #e2e8f0;display:block;" alt="live camera feed">',
+            unsafe_allow_html=True,
+        )
+        st.caption("Live feed · recognized faces appear under Recent activity below.")
+    else:
+        st.info("Camera is stopped — start it below to see the live feed.")
+
+    st.divider()
+    st.markdown("#### Recent activity")
+    recent_logs = call(client, lambda: client.recognition_logs(limit=8))
+    recent_unknown = call(client, lambda: client.unknown_faces(limit=5))
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**Recognized**")
+        if recent_logs and recent_logs.get("items"):
+            df = pd.DataFrame(recent_logs["items"])
+            df["time"] = pd.to_datetime(df["timestamp"]).dt.strftime("%H:%M:%S")
+            df["conf"] = (df["confidence"].astype(float) * 100).round(1).astype(str) + " %"
+            st.dataframe(
+                df[["time", "employee_code", "conf", "reported"]],
+                width="stretch",
+                hide_index=True,
+            )
+        else:
+            st.caption("No recognitions yet.")
+    with right:
+        st.markdown("**Unknown**")
+        if recent_unknown and recent_unknown.get("items"):
+            df = pd.DataFrame(recent_unknown["items"])
+            df["time"] = pd.to_datetime(df["timestamp"]).dt.strftime("%H:%M:%S")
+            st.dataframe(df[["time", "track_id"]], width="stretch", hide_index=True)
+        else:
+            st.caption("No unknown faces yet.")
+
+    st.divider()
     left, right = st.columns(2)
     with left:
         st.markdown("#### Camera")

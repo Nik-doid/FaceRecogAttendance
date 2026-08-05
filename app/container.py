@@ -29,6 +29,7 @@ from app.services.index_service import IndexService
 from app.services.settings_service import SettingsService
 from app.storage.snapshot import SnapshotStorage
 from app.workers.camera.reader import CameraReader
+from app.workers.frame_buffer import FrameBuffer
 from app.workers.recognition_loop.loop import RecognitionLoop
 from app.workers.recognition_loop.pipeline import RecognitionPipeline
 
@@ -54,6 +55,7 @@ class Container:
         self.snapshot_storage = SnapshotStorage(
             self.settings.snapshots_dir, enabled=self.settings.snapshot_enabled
         )
+        self.frame_buffer = FrameBuffer()
         self.attendance_reporter: AttendanceReporter = build_attendance_reporter(self.settings)
 
         # Repositories.
@@ -117,6 +119,7 @@ class Container:
             snapshot_storage=self.snapshot_storage,
             session_factory=sync_session,
             tracker=tracker,
+            frame_buffer=self.frame_buffer,
         )
 
     # -- lifecycle -----------------------------------------------------------------

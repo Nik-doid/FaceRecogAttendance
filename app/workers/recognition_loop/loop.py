@@ -46,6 +46,7 @@ from app.services.duplicate_suppressor import DuplicateSuppressor
 from app.services.settings_service import SettingsService
 from app.storage.snapshot import SnapshotStorage
 from app.workers.camera.reader import CameraReader
+from app.workers.frame_buffer import FrameBuffer
 from app.workers.recognition_loop.pipeline import FaceEvent, RecognitionPipeline
 
 MIN_BACKOFF_SECONDS = 1.0
@@ -71,6 +72,7 @@ class RecognitionLoop:
         snapshot_storage: SnapshotStorage,
         session_factory: Callable[[], Session] | None = None,
         tracker: Tracker | None = None,
+        frame_buffer: FrameBuffer | None = None,
     ) -> None:
         self._reader = reader
         self._pipeline = pipeline
@@ -86,6 +88,7 @@ class RecognitionLoop:
         self._snapshots = snapshot_storage
         self._session_factory = session_factory or sync_session
         self._tracker = tracker
+        self._frame_buffer = frame_buffer or FrameBuffer()
         self._log = get_logger(__name__)
 
         self._stop = threading.Event()
@@ -108,11 +111,17 @@ class RecognitionLoop:
         if self._thread is not None:
             self._thread.join(timeout=timeout)
         self._reader.close()
+        self._frame_buffer.clear()
         self._log.info("recognition loop stopped", extra={"camera_id": self._env.camera_id})
 
     @property
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def latest_frame(self) -> bytes | None:
+        """Most recent frame as JPEG bytes, or None when the camera is idle."""
+        return self._frame_buffer.latest()
 
     # -- main loop --------------------------------------------------------------
     def _run(self) -> None:
@@ -149,6 +158,8 @@ class RecognitionLoop:
                 self._log.warning("camera stream lost; reopening")
                 self._reader.close()
                 return  # outer loop re-opens with backoff
+
+            self._frame_buffer.publish(frame)
 
             if self._frame_index % self._frame_skip != 0:
                 FRAMES_SKIPPED.inc()
