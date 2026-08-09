@@ -82,6 +82,27 @@ class Settings(BaseSettings):
     attendance_queue: str = "attendance.checkin"
     attendance_publish_retries: int = 3
 
+    # --- Attendance log sync to the existing ERP DB (cron) -----------------------
+    # Replicates the INSERT the C# attendance software performs into
+    # ct_hr_employee_attendance_log. Disabled unless erp_sync_enabled is true; the
+    # sync runs on a background interval scheduler and/or on demand via the /sync API.
+    erp_sync_enabled: bool = False
+    erp_db_host: str = "localhost"
+    erp_db_port: int = 3306
+    erp_db_name: str = "attendance"
+    erp_db_user: str = "root"
+    erp_db_password: str = ""
+    # JSON map of camera_id -> {"device_id": <int>, "branch_id": <int>}.
+    erp_camera_mapping: dict[str, dict[str, int]] = {}
+    # verify_mode string column value (C# maps 0/1->FINGERPRINT, 2->PIN, 3->PASSWORD).
+    erp_verify_mode: str = "FACE"
+    erp_created_by: str = "system"
+    # in_out_mode: a literal int, or "toggle" to alternate check-in(1)/check-out(2)
+    # per employee per calendar day.
+    erp_in_out_mode: str = "1"
+    erp_sync_interval_seconds: int = 300
+    erp_sync_batch_size: int = 500
+
     # --- This service's own database -----------------------------------------
     database_url: str = "postgresql+asyncpg://face:face@localhost:5432/face_recognition"
     database_sync_url: str = "postgresql+psycopg://face:face@localhost:5432/face_recognition"
@@ -123,6 +144,21 @@ class Settings(BaseSettings):
     def _parse_path_list(cls, v: object) -> object:
         if isinstance(v, str):
             return [Path(part.strip()) for part in v.split(",") if part.strip()]
+        return v
+
+    @field_validator("erp_camera_mapping", mode="before")
+    @classmethod
+    def _parse_erp_camera_mapping(cls, v: object) -> object:
+        if isinstance(v, str):
+            import json
+
+            parsed = json.loads(v)
+            if not isinstance(parsed, dict):
+                raise ValueError("erp_camera_mapping must be a JSON object")
+            return {
+                camera_id: {str(k): int(val) for k, val in val_map.items()}
+                for camera_id, val_map in parsed.items()
+            }
         return v
 
 

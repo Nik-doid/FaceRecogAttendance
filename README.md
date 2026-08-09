@@ -234,6 +234,52 @@ Duplicate suppression: the same employee is only reported once per
 `DUPLICATE_TIMEOUT_SECONDS` window (default 300s). Suppressed and failed
 deliveries are recorded in `recognition_logs` with the response detail.
 
+## Attendance log sync to the existing ERP DB
+
+The C# attendance software writes punches into `ct_hr_employee_attendance_log`
+(`AttendanceLog.cs`). This service can write the same table directly, so the
+face-recognition events become a drop-in source of attendance rows without any
+change to the existing system.
+
+The sync is **disabled by default**. Enable it and point it at the ERP MySQL:
+
+| Setting                  | Default                | Meaning                                      |
+|--------------------------|------------------------|----------------------------------------------|
+| `ERP_SYNC_ENABLED`       | `false`                | Run the background sync + allow `/sync` API  |
+| `ERP_DB_HOST` / `_PORT`  | `localhost` / `3306`   | ERP MySQL connection                         |
+| `ERP_DB_NAME` / `_USER` / `_PASSWORD` | `attendance` / `root` | ERP credentials                    |
+| `ERP_CAMERA_MAPPING`     | `{}`                   | JSON `camera_id -> {device_id, branch_id}`   |
+| `ERP_VERIFY_MODE`        | `FACE`                 | `verify_mode` column value                   |
+| `ERP_CREATED_BY`         | `system`               | `created_by` column value                    |
+| `ERP_IN_OUT_MODE`        | `1`                    | `in_out_mode`: literal int, or `"toggle"`    |
+| `ERP_SYNC_INTERVAL_SECONDS` | `300`               | Background pass interval                     |
+| `ERP_SYNC_BATCH_SIZE`    | `500`                  | Max rows written per pass                    |
+
+```bash
+ERP_SYNC_ENABLED=true
+ERP_DB_HOST=192.168.1.50
+ERP_DB_NAME=attendance
+ERP_DB_USER=root
+ERP_DB_PASSWORD=secret
+ERP_CAMERA_MAPPING='{"cam-01":{"device_id":1,"branch_id":1},"cam-02":{"device_id":2,"branch_id":1}}'
+```
+
+Behavior mirrors the C# INSERT (`attendance_id_no`, `in_out_mode`, `verify_mode`,
+`log_date_time`, `device_id`, `branch_id`, `created_by`, `created_date`,
+`log_date_only`):
+
+- Only events with an `employee_code` that were successfully reported are
+  candidates.
+- Each camera maps to the physical attendance `device_id`/`branch_id` its
+  punches belong to; events from unmapped cameras are skipped and logged.
+- With `ERP_IN_OUT_MODE=toggle`, check-in (1) and check-out (2) alternate per
+  employee per calendar day so both a first and a later appearance are written.
+- Successful rows are stamped `erp_synced_at` in `recognition_logs`, making the
+  sync idempotent (never duplicates a punch, and the ERP insert's
+  `ON DUPLICATE KEY` upsert is mirrored).
+- The scheduler runs on a daemon thread; runs can also be triggered on demand
+  via `POST /api/v1/sync/attendance-log` (admin + rate-limited, audited).
+
 ## Configuration
 
 Full reference in [`.env.example`](.env.example). Key groups:
@@ -250,6 +296,9 @@ Full reference in [`.env.example`](.env.example). Key groups:
 - **Photos**: `EMPLOYEE_PHOTOS_SOURCE` (comma-separated roots)
 - **Attendance**: `ATTENDANCE_BROKER`, `ATTENDANCE_MQ_URL`, `ATTENDANCE_EXCHANGE`,
   `ATTENDANCE_ROUTING_KEY`, `ATTENDANCE_QUEUE`
+- **ERP sync**: `ERP_SYNC_ENABLED`, `ERP_DB_HOST/_PORT/_NAME/_USER/_PASSWORD`,
+  `ERP_CAMERA_MAPPING`, `ERP_VERIFY_MODE`, `ERP_CREATED_BY`, `ERP_IN_OUT_MODE`,
+  `ERP_SYNC_INTERVAL_SECONDS`, `ERP_SYNC_BATCH_SIZE`
 - **DB**: `DATABASE_URL` (async) and `DATABASE_SYNC_URL` (sync psycopg, same DB —
   used by the background worker)
 - **Storage**: `STORAGE_PATH`, `SNAPSHOTS_DIR`, `UNKNOWN_FACES_DIR`,
@@ -270,6 +319,8 @@ Full reference in [`.env.example`](.env.example). Key groups:
 | POST   | `/api/v1/camera/stop`          | JWT   | Stop recognition loop (rate-limited)           |
 | GET    | `/api/v1/recognition/logs`     | –     | Recent recognition events (filter by employee) |
 | GET    | `/api/v1/unknown-faces`        | –     | Recent unknown-face events                     |
+| GET    | `/api/v1/sync/attendance-log/status` | – | ERP sync enabled / pending backlog        |
+| POST   | `/api/v1/sync/attendance-log`  | JWT   | Run one ERP sync pass now (rate-limited, audited) |
 
 Admin endpoints require `Authorization: Bearer <jwt>` where the JWT is issued by
 the ops/attendance tooling with `sub = <operator>` and signed with
@@ -299,7 +350,9 @@ Mount a volume with the employee photos tree at `./uploads/employees`
 
 ## Own database
 
-The service manages its own schema (migration `alembic/versions/0001_initial.py`):
+The service manages its own schema (migrations `alembic/versions/0001_initial.py`
+and `0002_erp_sync.py`):
 `face_embeddings`, `recognition_logs`, `unknown_faces`, `cameras`, `settings`
 (runtime overrides for threshold/timeout/etc., editable without redeploy), and
-`audit_logs`. The existing attendance system's tables are never touched.
+`audit_logs`. The existing attendance system's tables are never touched — the
+ERP sync only ever writes `ct_hr_employee_attendance_log`.

@@ -15,6 +15,7 @@ from app.ai.tracker.base import Tracker
 from app.ai.tracker.bytetrack import ByteTrackTracker
 from app.config.settings import Settings
 from app.core.logging import get_logger
+from app.database.session import sync_session
 from app.repositories.audit_repo import AuditLogRepository
 from app.repositories.camera_repo import CameraRepository
 from app.repositories.face_embedding_repo import FaceEmbeddingRepository
@@ -25,6 +26,7 @@ from app.services.attendance_reporter import build_attendance_reporter
 from app.services.attendance_reporter.base import AttendanceReporter
 from app.services.camera_service import CameraService
 from app.services.duplicate_suppressor import DuplicateSuppressor
+from app.services.erp_sync import ErpSyncScheduler, build_erp_sync
 from app.services.index_service import IndexService
 from app.services.settings_service import SettingsService
 from app.storage.snapshot import SnapshotStorage
@@ -64,6 +66,16 @@ class Container:
         self.unknown_face_repo = UnknownFaceRepository()
         self.camera_repo = CameraRepository()
         self.audit_repo = AuditLogRepository()
+
+        # ERP attendance-log sync (optional).
+        self.erp_sync_service = build_erp_sync(self.settings)
+        if self.settings.erp_sync_enabled:
+            self.erp_sync_scheduler: ErpSyncScheduler | None = ErpSyncScheduler(
+                lambda: self.erp_sync_service.sync_once(sync_session),
+                interval_seconds=self.settings.erp_sync_interval_seconds,
+            )
+        else:
+            self.erp_sync_scheduler = None
 
         # AI components (loaded lazily if requested).
         self.ai: AIComponents | None = ai
@@ -128,8 +140,17 @@ class Container:
 
         return self.index_service.start_rebuild(sync_session)
 
+    def start_erp_sync(self) -> bool:
+        """Start the ERP sync scheduler thread if enabled. Returns whether it started."""
+        if self.erp_sync_scheduler is None:
+            return False
+        self.erp_sync_scheduler.start()
+        return True
+
     def shutdown(self) -> None:
         with self._lock:
+            if self.erp_sync_scheduler is not None:
+                self.erp_sync_scheduler.stop()
             try:
                 self.camera_service.stop()
             except Exception:  # noqa: BLE001

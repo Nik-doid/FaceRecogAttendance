@@ -37,3 +37,13 @@ PROCESSING_TIME = Histogram(
 )
 INDEX_SIZE = Gauge("face_index_size", "Number of embeddings currently in the FAISS index")
 CAMERA_CONNECTED = Gauge("face_camera_connected", "1 if the camera worker is connected, else 0")
+
+ERP_SYNC_INSERTED = Counter(
+    "face_erp_sync_inserted_total", "Attendance rows written to the ERP DB by the sync"
+)
+ERP_SYNC_FAILED = Counter(
+    "face_erp_sync_failed_total", "Attendance rows the ERP sync failed to write"
+)
+ERP_SYNC_PENDING = Gauge(
+    "face_erp_sync_pending", "Recognition events awaiting ERP attendance-log write"
+)

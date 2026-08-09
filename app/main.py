@@ -56,6 +56,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if settings.camera_autostart:
         container.camera_service.start()
 
+    container.start_erp_sync()
+
     log.info(
         "service started",
         extra={"camera_id": settings.camera_id, "env": settings.app_env},

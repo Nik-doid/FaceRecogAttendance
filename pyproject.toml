@@ -22,6 +22,7 @@ dependencies = [
     "httpx>=0.27,<1.0",
     "python-dotenv>=1.0,<2.0",
     "Pillow>=10.3,<12.0",
+    "PyMySQL>=1.1,<2.0",
     # faiss is part of the core pipeline (in-memory embedding index) and has plain
     # Windows/manylinux wheels, so it lives in base deps rather than the ai extra.
     "faiss-cpu>=1.8,<2.0",
