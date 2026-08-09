@@ -21,8 +21,11 @@ class InOutResolver:
 
     Supported policies (from ``erp_in_out_mode``):
     - a literal int string (e.g. ``"1"``): every event uses that value (all check-ins);
-    - ``"toggle"``: alternate check-in(1)/check-out(2) per employee per calendar day,
-      so both a first appearance (check-in) and later appearance (check-out) exist.
+    - ``"toggle"``: proper per-employee-per-day rule — the first punch of the day is a
+      check-in(1), the second is a check-out(2), and any further punches that day are
+      skipped entirely (no duplicate check-ins/outs). The rule is seeded from rows
+      already present in ``ct_hr_employee_attendance_log`` for that employee/day, so a
+      punch already saved by the C# software is never written twice.
     """
 
     CHECK_IN = 1
@@ -30,30 +33,42 @@ class InOutResolver:
 
     def __init__(self, policy: str) -> None:
         self._policy = policy
-        # (employee_code, log_date) -> last emitted in_out_mode, to drive toggling.
-        self._last: dict[tuple[str, str], int] = defaultdict(int)
+        # (attendance_id_no, log_date) -> in/out modes already seen (ERP + this run).
+        self._seen: dict[tuple[str, str], set[int]] = defaultdict(set)
 
     @property
     def policy(self) -> str:
         return self._policy
 
-    def resolve(self, employee_code: str, log_date: date) -> int:
-        if self._policy == "toggle":
-            key = (employee_code, log_date.isoformat())
-            previous = self._last[key]
-            following = (
-                self.CHECK_OUT if previous == self.CHECK_IN else self.CHECK_IN
-            )
-            self._last[key] = following
-            return following
-        try:
-            return int(self._policy)
-        except ValueError:
+    def seed(self, attendance_id_no: str, log_date: date, modes: set[int]) -> None:
+        """Pre-load the modes already present in the ERP log for this employee/day."""
+        self._seen[(attendance_id_no, log_date.isoformat())].update(modes)
+
+    def resolve(self, attendance_id_no: str, log_date: date) -> int | None:
+        """Return the in_out_mode for this punch, or None to skip (duplicate).
+
+        With a literal policy every event uses that value. With ``"toggle"`` the
+        first event of the day becomes a check-in, the second a check-out, and any
+        event after both exist for the day is skipped (None).
+        """
+        if self._policy != "toggle":
+            try:
+                return int(self._policy)
+            except ValueError:
+                return self.CHECK_IN
+        key = (attendance_id_no, log_date.isoformat())
+        seen = self._seen[key]
+        if self.CHECK_IN not in seen:
+            seen.add(self.CHECK_IN)
             return self.CHECK_IN
+        if self.CHECK_OUT not in seen:
+            seen.add(self.CHECK_OUT)
+            return self.CHECK_OUT
+        return None
 
     def reset(self) -> None:
-        """Clear toggle state (e.g. after the service restarts)."""
-        self._last.clear()
+        """Clear per-day state (e.g. after a sync run)."""
+        self._seen.clear()
 
 
 class CameraMapping:

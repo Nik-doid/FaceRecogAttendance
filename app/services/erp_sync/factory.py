@@ -12,9 +12,12 @@ from app.repositories.recognition_log_repo import RecognitionLogRepository
 from app.services.erp_sync.client import ErpDbConfig, ErpMysqlClient
 from app.services.erp_sync.mapping import CameraMapping, InOutResolver
 from app.services.erp_sync.service import ErpSyncService
+from app.storage.snapshot import SnapshotStorage
 
 
-def build_erp_sync(settings: Settings) -> ErpSyncService:
+def build_erp_sync(
+    settings: Settings, snapshot_storage: SnapshotStorage | None = None
+) -> ErpSyncService:
     client = ErpMysqlClient(
         ErpDbConfig(
             host=settings.erp_db_host,
@@ -22,6 +25,10 @@ def build_erp_sync(settings: Settings) -> ErpSyncService:
             database=settings.erp_db_name,
             user=settings.erp_db_user,
             password=settings.erp_db_password,
+            employee_table=settings.erp_employee_table,
+            employee_code_column=settings.erp_employee_code_column,
+            employee_id_column=settings.erp_employee_id_column,
+            employee_active_filter=settings.erp_employee_active_filter,
         )
     )
     return ErpSyncService(
@@ -33,4 +40,5 @@ def build_erp_sync(settings: Settings) -> ErpSyncService:
         created_by=settings.erp_created_by,
         batch_size=settings.erp_sync_batch_size,
         enabled=settings.erp_sync_enabled,
+        snapshot_storage=snapshot_storage,
     )

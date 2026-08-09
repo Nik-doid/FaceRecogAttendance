@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, time
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -71,6 +71,7 @@ class RecognitionLogRepository(BaseRepository[RecognitionLog]):
                 RecognitionLog.employee_code.is_not(None),
                 RecognitionLog.reported.is_(True),
                 RecognitionLog.erp_synced_at.is_(None),
+                RecognitionLog.erp_skip_reason.is_(None),
             )
             .order_by(RecognitionLog.timestamp.asc())
             .limit(limit)
@@ -90,10 +91,45 @@ class RecognitionLogRepository(BaseRepository[RecognitionLog]):
         )
         session.commit()
 
+    def mark_erp_skipped(self, session: Session, log_ids: list[int], reason: str) -> None:
+        """Stamp rows the sync deliberately skipped so they are not retried forever."""
+        if not log_ids:
+            return
+        session.execute(
+            update(RecognitionLog)
+            .where(RecognitionLog.id.in_(log_ids))
+            .values(erp_skip_reason=reason)
+        )
+        session.commit()
+
     def count_pending_erp_sync(self, session: Session) -> int:
         stmt = select(func.count()).select_from(RecognitionLog).where(
             RecognitionLog.employee_code.is_not(None),
             RecognitionLog.reported.is_(True),
             RecognitionLog.erp_synced_at.is_(None),
+            RecognitionLog.erp_skip_reason.is_(None),
         )
         return int(session.scalar(stmt) or 0)
+
+    def latest_attendance_snapshot(
+        self, session: Session, employee_code: str, day: date
+    ) -> str | None:
+        """The most recent attendance snapshot saved for an employee on a day.
+
+        The recognition loop reuses this instead of writing a second snapshot, so an
+        employee has at most one attendance snapshot per day — mirroring how the C#
+        software never captures more than one enrolment snapshot per punch.
+        """
+        stmt = (
+            select(RecognitionLog)
+            .where(
+                RecognitionLog.employee_code == employee_code,
+                RecognitionLog.snapshot_path.is_not(None),
+                RecognitionLog.timestamp >= datetime.combine(day, time.min),
+                RecognitionLog.timestamp < datetime.combine(day, time.max),
+            )
+            .order_by(RecognitionLog.timestamp.desc())
+            .limit(1)
+        )
+        log = session.scalar(stmt)
+        return log.snapshot_path if log is not None else None

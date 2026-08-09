@@ -201,18 +201,13 @@ class RecognitionLoop:
         if not self._suppressor.check_and_record(ev.employee_code or ""):
             self._write_log(ev, reported=False, response="duplicate_suppressed")
             return
-        snapshot_path = self._snapshots.save(
-            frame,
-            prefix="attendance",
-            employee_code=ev.employee_code,
-            track_id=ev.track_id,
-        )
+        snapshot_path = self._attendance_snapshot(ev.employee_code or "", frame)
         event = AttendanceEvent(
             employee_code=ev.employee_code or "",
             camera_id=self._env.camera_id,
             timestamp=datetime.now(UTC),
             confidence=ev.confidence,
-            snapshot_path=str(snapshot_path) if snapshot_path else None,
+            snapshot_path=snapshot_path,
             track_id=ev.track_id,
         )
         result = self._reporter.report(event)
@@ -228,8 +223,30 @@ class RecognitionLoop:
             ev,
             reported=result.success,
             response=result.detail,
-            snapshot_path=str(snapshot_path) if snapshot_path else None,
+            snapshot_path=snapshot_path,
         )
+
+    def _attendance_snapshot(self, employee_code: str, frame: np.ndarray) -> str | None:
+        """Save at most one attendance snapshot per employee per day.
+
+        If a snapshot already exists for this employee today, its path is reused instead
+        of writing another file — the C# software never produces multiple attendance
+        snapshots per person per day, and snapshots are only kept when the punch is
+        actually written to the ERP DB.
+        """
+        if not self._snapshots.enabled:
+            return None
+        today = datetime.now(UTC).date()
+        with self._session_factory() as session:
+            existing = self._log_repo.latest_attendance_snapshot(session, employee_code, today)
+            if existing:
+                return existing
+        path = self._snapshots.save(
+            frame,
+            prefix="attendance",
+            employee_code=employee_code,
+        )
+        return str(path) if path else None
 
     def _handle_unknown(self, frame: np.ndarray, ev: FaceEvent) -> None:
         UNKNOWN_FACES.inc()

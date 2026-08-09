@@ -4,12 +4,18 @@ Pulls recognised + reported recognition events that have not yet been written to
 existing attendance system's ``ct_hr_employee_attendance_log`` table and inserts them,
 mirroring the C# software's INSERT. On success each row is stamped ``erp_synced_at`` so
 the cron never re-inserts (idempotent).
+
+The employee code recorded by recognition is resolved to the ERP attendance id via the
+``ct_hr_employee_master``-style table (``attendance_thumb_id_no``), exactly like the C#
+software. In/out mode follows the ERP state for that employee+day, so a punch the C#
+software already recorded is never written twice, and attendance snapshots are only kept
+for events that were actually saved to the ERP DB.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
 
@@ -25,8 +31,13 @@ from app.services.erp_sync.mapping import (
     InOutResolver,
     format_datetime,
 )
+from app.storage.snapshot import SnapshotStorage
 
 log = get_logger(__name__)
+
+SKIP_UNMAPPED_CAMERA = "unmapped_camera"
+SKIP_NO_EMPLOYEE = "no_employee_id"
+SKIP_DUPLICATE_IN_OUT = "duplicate_in_out"
 
 
 class ErpSyncService:
@@ -41,6 +52,7 @@ class ErpSyncService:
         created_by: str,
         batch_size: int = 500,
         enabled: bool = True,
+        snapshot_storage: SnapshotStorage | None = None,
     ) -> None:
         self._repo = repo
         self._client = client
@@ -50,6 +62,7 @@ class ErpSyncService:
         self._created_by = created_by
         self._batch_size = batch_size
         self._enabled = enabled
+        self._snapshots = snapshot_storage
 
     @property
     def enabled(self) -> bool:
@@ -76,28 +89,46 @@ class ErpSyncService:
 
                 rows: list[dict[str, object]] = []
                 synced_ids: list[int] = []
+                # record id -> skip reason, so each skipped row carries its own reason.
+                skipped: dict[int, str] = {}
                 now = datetime.now(UTC)
+                # (employee_id, day) already seeded from ERP existing rows, so the
+                # toggle never double-counts a punch the C# software already saved.
+                seeded: set[tuple[str, date]] = set()
 
                 for record in pending:
-                    mapped = self._to_row(record, now, stats)
-                    if mapped is None:
+                    row, record_id, skip_reason = self._to_row(record, now, stats, seeded)
+                    if skip_reason:
+                        skipped[record_id] = skip_reason
+                        self._discard_snapshot(record)
                         continue
-                    rows.append(mapped[0])
-                    synced_ids.append(mapped[1])
+                    if row is None:
+                        continue
+                    rows.append(row)
+                    synced_ids.append(record_id)
+
+                if skipped:
+                    by_reason: dict[str, list[int]] = {}
+                    for rec_id, reason in skipped.items():
+                        by_reason.setdefault(reason, []).append(rec_id)
+                    for reason, rec_ids in by_reason.items():
+                        self._repo.mark_erp_skipped(session, rec_ids, reason)
 
                 if rows:
                     results = self._client.insert_many(rows)
+                    inserted_ids: list[int] = []
                     for ok, rec_id in zip(results, synced_ids, strict=True):
                         if ok:
                             stats.inserted += 1
                             ERP_SYNC_INSERTED.inc()
+                            inserted_ids.append(rec_id)
                         else:
                             stats.failed += 1
                             ERP_SYNC_FAILED.inc()
                             stats.errors.append(f"ERP insert failed for log id {rec_id}")
 
-                    if stats.inserted:
-                        self._repo.mark_erp_synced(session, synced_ids, now)
+                    if inserted_ids:
+                        self._repo.mark_erp_synced(session, inserted_ids, now)
         except Exception as exc:  # noqa: BLE001 - never crash the scheduler thread
             log.exception("ERP sync pass failed")
             stats.errors.append(str(exc))
@@ -105,9 +136,23 @@ class ErpSyncService:
 
         return ErpSyncResult(ok=True, stats=stats)
 
+    def _discard_snapshot(self, record: RecognitionLog) -> None:
+        """Delete the snapshot for an event the ERP never accepted (not kept offline)."""
+        if self._snapshots is not None and record.snapshot_path:
+            self._snapshots.remove(record.snapshot_path)
+
     def _to_row(
-        self, record: RecognitionLog, now: datetime, stats: ErpSyncStats
-    ) -> tuple[dict[str, object], int] | None:
+        self,
+        record: RecognitionLog,
+        now: datetime,
+        stats: ErpSyncStats,
+        seeded: set[tuple[str, date]],
+    ) -> tuple[dict[str, object] | None, int, str | None]:
+        """Build the ERP row for a record, or a skip reason.
+
+        Returns ``(row, record_id, None)`` to insert, ``(None, record_id, reason)`` to
+        skip, or ``(None, record_id, None)`` for an internal no-op (never occurs).
+        """
         assert record.employee_code is not None
         try:
             device_id, branch_id = self._camera_mapping.resolve(record.camera_id)
@@ -117,14 +162,38 @@ class ErpSyncService:
                 "camera not mapped to ERP device; skipping",
                 extra={"camera_id": record.camera_id, "employee_code": record.employee_code},
             )
-            return None
+            return None, record.id, SKIP_UNMAPPED_CAMERA
+
+        employee_id = self._client.lookup_employee_id(record.employee_code)
+        if not employee_id:
+            stats.skipped_no_employee += 1
+            log.warning(
+                "no ERP employee id for code; skipping",
+                extra={"employee_code": record.employee_code, "camera_id": record.camera_id},
+            )
+            return None, record.id, SKIP_NO_EMPLOYEE
 
         log_dt = record.timestamp
         log_date = log_dt.date()
-        in_out = self._in_out.resolve(record.employee_code, log_date)
+        key = (employee_id, log_date)
+        if key not in seeded:
+            # A punch the C# software already recorded for this employee+day must not be
+            # duplicated, so seed the in/out rule from the ERP log state.
+            existing = self._client.existing_in_out_modes(employee_id, log_date.isoformat())
+            self._in_out.seed(employee_id, log_date, existing)
+            seeded.add(key)
+
+        in_out = self._in_out.resolve(employee_id, log_date)
+        if in_out is None:
+            stats.skipped_duplicate_in_out += 1
+            log.info(
+                "check-in and check-out already recorded for the day; skipping",
+                extra={"employee_id": employee_id, "log_date": log_date.isoformat()},
+            )
+            return None, record.id, SKIP_DUPLICATE_IN_OUT
 
         row: dict[str, object] = {
-            "attendance_id_no": record.employee_code,
+            "attendance_id_no": employee_id,
             "in_out_mode": in_out,
             "verify_mode": self._verify_mode,
             "log_date_time": format_datetime(log_dt),
@@ -134,4 +203,4 @@ class ErpSyncService:
             "created_date": format_datetime(now),
             "log_date_only": log_date.isoformat(),
         }
-        return row, record.id
+        return row, record.id, None

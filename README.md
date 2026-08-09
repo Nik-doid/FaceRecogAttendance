@@ -251,7 +251,11 @@ The sync is **disabled by default**. Enable it and point it at the ERP MySQL:
 | `ERP_CAMERA_MAPPING`     | `{}`                   | JSON `camera_id -> {device_id, branch_id}`   |
 | `ERP_VERIFY_MODE`        | `FACE`                 | `verify_mode` column value                   |
 | `ERP_CREATED_BY`         | `system`               | `created_by` column value                    |
-| `ERP_IN_OUT_MODE`        | `1`                    | `in_out_mode`: literal int, or `"toggle"`    |
+| `ERP_EMPLOYEE_TABLE`     | `ct_hr_employee_master`| Table mapping `emp_code` -> attendance id    |
+| `ERP_EMPLOYEE_CODE_COLUMN` | `emp_code`           | Employee code column in that table           |
+| `ERP_EMPLOYEE_ID_COLUMN` | `attendance_thumb_id_no` | Column holding the `attendance_id_no`    |
+| `ERP_EMPLOYEE_ACTIVE_FILTER` | (empty)             | Optional extra `WHERE` (e.g. active only)    |
+| `ERP_IN_OUT_MODE`        | `toggle`               | `in_out_mode`: literal int, or `"toggle"`    |
 | `ERP_SYNC_INTERVAL_SECONDS` | `300`               | Background pass interval                     |
 | `ERP_SYNC_BATCH_SIZE`    | `500`                  | Max rows written per pass                    |
 
@@ -262,6 +266,7 @@ ERP_DB_NAME=attendance
 ERP_DB_USER=root
 ERP_DB_PASSWORD=secret
 ERP_CAMERA_MAPPING='{"cam-01":{"device_id":1,"branch_id":1},"cam-02":{"device_id":2,"branch_id":1}}'
+ERP_EMPLOYEE_ACTIVE_FILTER="_status='employed' AND is_deleted_flag='n'"
 ```
 
 Behavior mirrors the C# INSERT (`attendance_id_no`, `in_out_mode`, `verify_mode`,
@@ -271,12 +276,24 @@ Behavior mirrors the C# INSERT (`attendance_id_no`, `in_out_mode`, `verify_mode`
 - Only events with an `employee_code` that were successfully reported are
   candidates.
 - Each camera maps to the physical attendance `device_id`/`branch_id` its
-  punches belong to; events from unmapped cameras are skipped and logged.
-- With `ERP_IN_OUT_MODE=toggle`, check-in (1) and check-out (2) alternate per
-  employee per calendar day so both a first and a later appearance are written.
+  punches belong to; events from unmapped cameras are skipped (with the snapshot
+  discarded) and recorded with an `erp_skip_reason`.
+- The employee code is resolved to the ERP attendance id the same way the C#
+  report does — `ERP_EMPLOYEE_TABLE.emp_code -> attendance_thumb_id_no` — and
+  that numeric id is written as `attendance_id_no`. Events for codes with no
+  mapping are skipped and the snapshot is discarded.
+- With `ERP_IN_OUT_MODE=toggle`, the first punch of a day is check-in (1) and
+  the second is check-out (2); any further punches that day are skipped — a day
+  never gets a second check-in or second check-out. The rule is seeded from the
+  rows already in `ct_hr_employee_attendance_log` for that employee+day, so a
+  punch the C# software already recorded is never written twice.
 - Successful rows are stamped `erp_synced_at` in `recognition_logs`, making the
   sync idempotent (never duplicates a punch, and the ERP insert's
   `ON DUPLICATE KEY` upsert is mirrored).
+- Attendance snapshots follow the C# behaviour: at most **one** snapshot per
+  employee per day is saved (later appearances reuse it), and a snapshot is only
+  kept if its punch is actually written to the ERP DB — skipped events have their
+  snapshot file deleted.
 - The scheduler runs on a daemon thread; runs can also be triggered on demand
   via `POST /api/v1/sync/attendance-log` (admin + rate-limited, audited).
 
@@ -297,7 +314,8 @@ Full reference in [`.env.example`](.env.example). Key groups:
 - **Attendance**: `ATTENDANCE_BROKER`, `ATTENDANCE_MQ_URL`, `ATTENDANCE_EXCHANGE`,
   `ATTENDANCE_ROUTING_KEY`, `ATTENDANCE_QUEUE`
 - **ERP sync**: `ERP_SYNC_ENABLED`, `ERP_DB_HOST/_PORT/_NAME/_USER/_PASSWORD`,
-  `ERP_CAMERA_MAPPING`, `ERP_VERIFY_MODE`, `ERP_CREATED_BY`, `ERP_IN_OUT_MODE`,
+  `ERP_CAMERA_MAPPING`, `ERP_VERIFY_MODE`, `ERP_CREATED_BY`,
+  `ERP_EMPLOYEE_TABLE/_CODE_COLUMN/_ID_COLUMN/_ACTIVE_FILTER`, `ERP_IN_OUT_MODE`,
   `ERP_SYNC_INTERVAL_SECONDS`, `ERP_SYNC_BATCH_SIZE`
 - **DB**: `DATABASE_URL` (async) and `DATABASE_SYNC_URL` (sync psycopg, same DB —
   used by the background worker)
@@ -350,8 +368,8 @@ Mount a volume with the employee photos tree at `./uploads/employees`
 
 ## Own database
 
-The service manages its own schema (migrations `alembic/versions/0001_initial.py`
-and `0002_erp_sync.py`):
+The service manages its own schema (migrations `alembic/versions/0001_initial.py`,
+`0002_erp_sync.py`, and `0003_erp_skip_reason.py`):
 `face_embeddings`, `recognition_logs`, `unknown_faces`, `cameras`, `settings`
 (runtime overrides for threshold/timeout/etc., editable without redeploy), and
 `audit_logs`. The existing attendance system's tables are never touched — the

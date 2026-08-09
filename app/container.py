@@ -68,7 +68,7 @@ class Container:
         self.audit_repo = AuditLogRepository()
 
         # ERP attendance-log sync (optional).
-        self.erp_sync_service = build_erp_sync(self.settings)
+        self.erp_sync_service = build_erp_sync(self.settings, self.snapshot_storage)
         if self.settings.erp_sync_enabled:
             self.erp_sync_scheduler: ErpSyncScheduler | None = ErpSyncScheduler(
                 lambda: self.erp_sync_service.sync_once(sync_session),

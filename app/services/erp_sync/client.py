@@ -21,6 +21,7 @@ _INSERT = (
     "branch_id, created_by, created_date, log_date_only)"
     "VALUES(%(attendance_id_no)s,%(in_out_mode)s,%(verify_mode)s,%(log_date_time)s,"
     "%(device_id)s,%(branch_id)s,%(created_by)s,%(created_date)s,%(log_date_only)s)"
+    "ON DUPLICATE KEY UPDATE attendance_id_no=attendance_id_no"
 )
 
 @dataclass(frozen=True)
@@ -30,6 +31,11 @@ class ErpDbConfig:
     database: str = "attendance"
     user: str = "root"
     password: str = ""
+    # Employee code -> attendance id lookup (mirrors ct_hr_employee_master in C#).
+    employee_table: str = "ct_hr_employee_master"
+    employee_code_column: str = "emp_code"
+    employee_id_column: str = "attendance_thumb_id_no"
+    employee_active_filter: str = ""
 
 
 class ErpMysqlClient:
@@ -77,3 +83,60 @@ class ErpMysqlClient:
     def insert_many(self, rows: list[dict[str, object]]) -> list[bool]:
         """Insert several rows. Returns a per-row success list (transactional per row)."""
         return [self.insert_row(r) for r in rows]
+
+    def lookup_employee_id(self, employee_code: str) -> str | None:
+        """Resolve an employee code to its ERP attendance id (numeric enroll number).
+
+        Mirrors the C# lookup chain: ``ct_hr_employee_master.emp_code`` ->
+        ``attendance_thumb_id_no`` == the ``attendance_id_no`` written to the log.
+        """
+        conn = None
+        try:
+            conn = self._connect()
+            table = self._config.employee_table
+            code_col = self._config.employee_code_column
+            id_col = self._config.employee_id_column
+            sql = (
+                f"SELECT {id_col} FROM {table} "
+                f"WHERE {code_col}=%s"
+            )
+            if self._config.employee_active_filter:
+                sql += f" AND {self._config.employee_active_filter}"
+            sql += " LIMIT 1"
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (employee_code,))
+                row = cursor.fetchone()
+            if row is None:
+                return None
+            return str(row[0])
+        except Exception as exc:  # noqa: BLE001 - failures surface to the caller
+            log.warning("ERP employee lookup failed: %s", exc)
+            return None
+        finally:
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
+
+    def existing_in_out_modes(self, attendance_id_no: str, log_date_only: str) -> set[int]:
+        """In/out modes already present in the ERP log for an employee on a day.
+
+        Used to seed the in/out dedup rule so a punch already recorded by the C#
+        software is never written twice.
+        """
+        conn = None
+        try:
+            conn = self._connect()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT DISTINCT in_out_mode FROM ct_hr_employee_attendance_log "
+                    "WHERE attendance_id_no=%s AND log_date_only=%s",
+                    (attendance_id_no, log_date_only),
+                )
+                return {int(row[0]) for row in cursor.fetchall()}
+        except Exception as exc:  # noqa: BLE001 - failures surface to the caller
+            log.warning("ERP existing in/out lookup failed: %s", exc)
+            return set()
+        finally:
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()

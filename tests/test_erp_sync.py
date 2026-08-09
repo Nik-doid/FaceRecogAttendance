@@ -36,16 +36,20 @@ def test_erp_camera_mapping_json_parsed() -> None:
 def test_erp_sync_defaults_disabled() -> None:
     s = Settings(_env_file=None)
     assert s.erp_sync_enabled is False
-    assert s.erp_in_out_mode == "1"
+    assert s.erp_in_out_mode == "toggle"
     assert s.erp_verify_mode == "FACE"
     assert s.erp_created_by == "system"
+    assert s.erp_employee_table == "ct_hr_employee_master"
+    assert s.erp_employee_code_column == "emp_code"
+    assert s.erp_employee_id_column == "emp_id"
+    assert s.erp_employee_active_filter == "_status"
 
 
 # --- mapping ------------------------------------------------------------------
 
 
 def test_camera_mapping_resolve_and_missing() -> None:
-    mapping = CameraMapping({"cam-01": {"device_id": 1, "branch_id": 2}})
+    mapping = CameraMapping({"cam-01": {"device_id": 1, "branch_id": 1}})
     assert mapping.resolve("cam-01") == (1, 2)
     assert mapping.contains("cam-01")
     with pytest.raises(CameraNotMappedError):
@@ -58,22 +62,31 @@ def test_in_out_resolver_literal_policy() -> None:
     assert r.resolve("EMP1", NOW.date()) == 1
 
 
-def test_in_out_resolver_toggle_alternates_per_employee_per_day() -> None:
+def test_in_out_resolver_toggle_first_in_second_out_third_skipped() -> None:
     r = InOutResolver("toggle")
     d1 = NOW.date()
     d2 = NOW.date().replace(day=5)
-    assert r.resolve("EMP1", d1) == 1
-    assert r.resolve("EMP1", d1) == 2
-    assert r.resolve("EMP1", d1) == 1
-    assert r.resolve("EMP1", d2) == 1
-    assert r.resolve("EMP2", d1) == 1
+    assert r.resolve("1001", d1) == 1
+    assert r.resolve("1001", d1) == 2
+    assert r.resolve("1001", d1) is None
+    assert r.resolve("1001", d2) == 1
+    assert r.resolve("1002", d1) == 1
     r.reset()
-    assert r.resolve("EMP1", d1) == 1
+    assert r.resolve("1001", d1) == 1
+
+
+def test_in_out_resolver_toggle_seeded_from_existing_rows() -> None:
+    r = InOutResolver("toggle")
+    d1 = NOW.date()
+    # C# already recorded the check-in for today, so the next punch is a check-out.
+    r.seed("1001", d1, {InOutResolver.CHECK_IN})
+    assert r.resolve("1001", d1) == 2
+    assert r.resolve("1001", d1) is None
 
 
 def test_in_out_resolver_invalid_policy_falls_back_to_check_in() -> None:
     r = InOutResolver("not-a-number")
-    assert r.resolve("EMP1", NOW.date()) == 1
+    assert r.resolve("1001", NOW.date()) == 1
 
 
 def test_format_datetime_matches_csharp_style() -> None:
@@ -88,6 +101,9 @@ def test_erp_db_config_defaults() -> None:
     assert cfg.host == "localhost"
     assert cfg.port == 3306
     assert cfg.user == "root"
+    assert cfg.employee_table == "ct_hr_employee_master"
+    assert cfg.employee_code_column == "emp_code"
+    assert cfg.employee_id_column == "attendance_thumb_id_no"
 
 
 # --- service ------------------------------------------------------------------
@@ -97,10 +113,23 @@ class _FakeErpClient:
     def __init__(self) -> None:
         self.calls: list[list[dict[str, object]]] = []
         self.fail_all = False
+        # employee_code -> ERP attendance id; defaults to identity mapping.
+        self.employee_ids: dict[str, str] = {}
+        # (employee_id, log_date) -> in/out modes already in the ERP log.
+        self.existing: dict[tuple[str, str], set[int]] = {}
+        self.lookup_queries: list[tuple[str, object]] = []
 
     def insert_many(self, rows: list[dict[str, object]]) -> list[bool]:
         self.calls.append(rows)
         return [False] * len(rows) if self.fail_all else [True] * len(rows)
+
+    def lookup_employee_id(self, employee_code: str) -> str | None:
+        self.lookup_queries.append(("lookup", employee_code))
+        return self.employee_ids.get(employee_code, employee_code)
+
+    def existing_in_out_modes(self, attendance_id_no: str, log_date_only: str) -> set[int]:
+        self.lookup_queries.append(("existing", attendance_id_no, log_date_only))
+        return self.existing.get((attendance_id_no, log_date_only), set())
 
 
 def _add_pending(
@@ -109,6 +138,7 @@ def _add_pending(
     camera_id: str,
     timestamp: datetime,
     reported: bool = True,
+    snapshot_path: str | None = None,
 ) -> int:
     with sync_session() as session:
         log = RecognitionLogRepository().add_entry(
@@ -119,12 +149,13 @@ def _add_pending(
             confidence=0.9,
             reported=reported,
             attendance_response="published",
+            snapshot_path=snapshot_path,
         )
         return log.id
 
 
 def _make_service(
-    client: _FakeErpClient, *, enabled: bool = True, in_out: str = "1"
+    client: _FakeErpClient, *, enabled: bool = True, in_out: str = "toggle"
 ) -> ErpSyncService:
     return ErpSyncService(
         repo=RecognitionLogRepository(),
@@ -189,14 +220,17 @@ def test_sync_idempotent_second_pass(db) -> None:  # type: ignore[no-untyped-def
 
 
 def test_sync_skips_unmapped_camera(db) -> None:  # type: ignore[no-untyped-def]
-    _add_pending(employee_code="EMP1", camera_id="cam-zz", timestamp=NOW)
+    rid = _add_pending(employee_code="EMP1", camera_id="cam-zz", timestamp=NOW)
     service = _make_service(_FakeErpClient())
     result = service.sync_once(sync_session)
     assert result.ok
     assert result.stats.skipped_unmapped_camera == 1
     assert result.stats.inserted == 0
     with sync_session() as session:
-        assert RecognitionLogRepository().count_pending_erp_sync(session) == 1
+        assert RecognitionLogRepository().count_pending_erp_sync(session) == 0
+        skipped = session.get(RecognitionLog, rid)
+        assert skipped is not None
+        assert skipped.erp_skip_reason == "unmapped_camera"
 
 
 def test_sync_client_failure_tracks_failed_and_keeps_pending(db) -> None:  # type: ignore[no-untyped-def]
@@ -223,6 +257,104 @@ def test_sync_toggle_writes_in_then_out(db) -> None:  # type: ignore[no-untyped-
     assert result.stats.inserted == 2
     modes = [row["in_out_mode"] for row in client.calls[0]]
     assert modes == [1, 2]
+
+
+def test_sync_toggle_skips_third_punch_of_day(db) -> None:  # type: ignore[no-untyped-def]
+    _add_pending(employee_code="EMP1", camera_id="cam-01", timestamp=NOW)
+    _add_pending(
+        employee_code="EMP1", camera_id="cam-01", timestamp=NOW.replace(hour=18)
+    )
+    _add_pending(
+        employee_code="EMP1", camera_id="cam-01", timestamp=NOW.replace(hour=20)
+    )
+    client = _FakeErpClient()
+    service = _make_service(client, in_out="toggle")
+    result = service.sync_once(sync_session)
+    assert result.stats.inserted == 2
+    assert result.stats.skipped_duplicate_in_out == 1
+    modes = [row["in_out_mode"] for row in client.calls[0]]
+    assert modes == [1, 2]
+    with sync_session() as session:
+        assert RecognitionLogRepository().count_pending_erp_sync(session) == 0
+
+
+def test_sync_does_not_duplicate_punch_already_in_erp(db) -> None:  # type: ignore[no-untyped-def]
+    # The C# software already recorded the check-in for EMP1 today; the next punch
+    # must become the check-out, never a second check-in.
+    _add_pending(employee_code="EMP1", camera_id="cam-01", timestamp=NOW.replace(hour=18))
+    client = _FakeErpClient()
+    client.existing[("EMP1", NOW.date().isoformat())] = {1}
+    service = _make_service(client, in_out="toggle")
+    result = service.sync_once(sync_session)
+    assert result.stats.inserted == 1
+    assert client.calls[0][0]["in_out_mode"] == 2
+
+
+def test_sync_skips_no_employee_id_and_marks_reason(db) -> None:  # type: ignore[no-untyped-def]
+    rid = _add_pending(employee_code="UNKNOWN-EMP", camera_id="cam-01", timestamp=NOW)
+    client = _FakeErpClient()
+    client.employee_ids = {"UNKNOWN-EMP": None}
+    service = _make_service(client, in_out="toggle")
+    result = service.sync_once(sync_session)
+    assert result.stats.skipped_no_employee == 1
+    assert result.stats.inserted == 0
+    with sync_session() as session:
+        assert RecognitionLogRepository().count_pending_erp_sync(session) == 0
+        skipped = session.get(RecognitionLog, rid)
+        assert skipped is not None
+        assert skipped.erp_skip_reason == "no_employee_id"
+
+
+def test_sync_deletes_snapshot_for_skipped_event(db, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    snapshot = tmp_path / "attendance_EMP1_20260804.jpg"
+    snapshot.write_bytes(b"jpeg")
+    _add_pending(
+        employee_code="EMP1",
+        camera_id="cam-zz",
+        timestamp=NOW,
+        snapshot_path=str(snapshot),
+    )
+    from app.storage.snapshot import SnapshotStorage
+
+    client = _FakeErpClient()
+    service = ErpSyncService(
+        repo=RecognitionLogRepository(),
+        client=client,  # type: ignore[arg-type]
+        camera_mapping=CameraMapping({"cam-01": {"device_id": 1, "branch_id": 2}}),
+        in_out_resolver=InOutResolver("toggle"),
+        verify_mode="FACE",
+        created_by="system",
+        snapshot_storage=SnapshotStorage(tmp_path / "snapshots", enabled=True),
+    )
+    result = service.sync_once(sync_session)
+    assert result.stats.skipped_unmapped_camera == 1
+    assert snapshot.exists() is False
+
+
+def test_sync_keeps_snapshot_for_inserted_event(db, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    snapshot = tmp_path / "attendance_EMP1_20260804.jpg"
+    snapshot.write_bytes(b"jpeg")
+    _add_pending(
+        employee_code="EMP1",
+        camera_id="cam-01",
+        timestamp=NOW,
+        snapshot_path=str(snapshot),
+    )
+    from app.storage.snapshot import SnapshotStorage
+
+    client = _FakeErpClient()
+    service = ErpSyncService(
+        repo=RecognitionLogRepository(),
+        client=client,  # type: ignore[arg-type]
+        camera_mapping=CameraMapping({"cam-01": {"device_id": 1, "branch_id": 2}}),
+        in_out_resolver=InOutResolver("toggle"),
+        verify_mode="FACE",
+        created_by="system",
+        snapshot_storage=SnapshotStorage(tmp_path / "snapshots", enabled=True),
+    )
+    result = service.sync_once(sync_session)
+    assert result.stats.inserted == 1
+    assert snapshot.exists() is True
 
 
 def test_build_erp_sync_from_settings_respects_enabled(db) -> None:  # type: ignore[no-untyped-def]

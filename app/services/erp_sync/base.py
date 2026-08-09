@@ -34,6 +34,8 @@ class ErpSyncStats:
     inserted: int = 0
     failed: int = 0
     skipped_unmapped_camera: int = 0
+    skipped_no_employee: int = 0
+    skipped_duplicate_in_out: int = 0
     errors: list[str] = field(default_factory=list)
 
 

@@ -52,7 +52,11 @@ async def erp_sync_run(
             resource="erp",
             detail=(
                 f"scanned={result.stats.scanned} inserted={result.stats.inserted} "
-                f"failed={result.stats.failed} ok={result.ok}"
+                f"failed={result.stats.failed} "
+                f"skipped_unmapped_camera={result.stats.skipped_unmapped_camera} "
+                f"skipped_no_employee={result.stats.skipped_no_employee} "
+                f"skipped_duplicate_in_out={result.stats.skipped_duplicate_in_out} "
+                f"ok={result.ok}"
             ),
         )
 
@@ -63,6 +67,8 @@ async def erp_sync_run(
             inserted=result.stats.inserted,
             failed=result.stats.failed,
             skipped_unmapped_camera=result.stats.skipped_unmapped_camera,
+            skipped_no_employee=result.stats.skipped_no_employee,
+            skipped_duplicate_in_out=result.stats.skipped_duplicate_in_out,
         ),
         detail=result.detail,
     )
