@@ -253,8 +253,8 @@ The sync is **disabled by default**. Enable it and point it at the ERP MySQL:
 | `ERP_CREATED_BY`         | `system`               | `created_by` column value                    |
 | `ERP_EMPLOYEE_TABLE`     | `ct_hr_employee_master`| Table mapping `emp_code` -> attendance id    |
 | `ERP_EMPLOYEE_CODE_COLUMN` | `emp_code`           | Employee code column in that table           |
-| `ERP_EMPLOYEE_ID_COLUMN` | `attendance_thumb_id_no` | Column holding the `attendance_id_no`    |
-| `ERP_EMPLOYEE_ACTIVE_FILTER` | (empty)             | Optional extra `WHERE` (e.g. active only)    |
+| `ERP_EMPLOYEE_ID_COLUMN` | `emp_id`              | Column holding the `attendance_id_no`    |
+| `ERP_EMPLOYEE_ACTIVE_FILTER` | `_status`         | Optional extra `WHERE` (e.g. active only)    |
 | `ERP_IN_OUT_MODE`        | `toggle`               | `in_out_mode`: literal int, or `"toggle"`    |
 | `ERP_SYNC_INTERVAL_SECONDS` | `300`               | Background pass interval                     |
 | `ERP_SYNC_BATCH_SIZE`    | `500`                  | Max rows written per pass                    |
@@ -279,8 +279,8 @@ Behavior mirrors the C# INSERT (`attendance_id_no`, `in_out_mode`, `verify_mode`
   punches belong to; events from unmapped cameras are skipped (with the snapshot
   discarded) and recorded with an `erp_skip_reason`.
 - The employee code is resolved to the ERP attendance id the same way the C#
-  report does — `ERP_EMPLOYEE_TABLE.emp_code -> attendance_thumb_id_no` — and
-  that numeric id is written as `attendance_id_no`. Events for codes with no
+  report does — `ERP_EMPLOYEE_TABLE.emp_code -> emp_id` — and
+  that id is written as `attendance_id_no`. Events for codes with no
   mapping are skipped and the snapshot is discarded.
 - With `ERP_IN_OUT_MODE=toggle`, the first punch of a day is check-in (1) and
   the second is check-out (2); any further punches that day are skipped — a day

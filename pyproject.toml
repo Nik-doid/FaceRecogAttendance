@@ -35,6 +35,11 @@ dependencies = [
 ai = [
     "onnxruntime>=1.18,<2.0",
     "insightface>=0.7.3,<1.0",
+    # insightface 0.7.3 depends on `onnx`, whose latest releases no longer import
+    # against current ml-dtypes (top-level bfloat16/float4 aliases moved). Pin the
+    # onnx + ml-dtypes pair that imports cleanly with numpy 2.x.
+    "onnx>=1.16,<1.17",
+    "ml-dtypes>=0.4,<0.5",
 ]
 # Local debugging / ops UI (Streamlit). Not installed by the service Docker image.
 frontend = [

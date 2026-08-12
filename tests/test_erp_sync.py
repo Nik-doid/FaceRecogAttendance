@@ -50,7 +50,7 @@ def test_erp_sync_defaults_disabled() -> None:
 
 def test_camera_mapping_resolve_and_missing() -> None:
     mapping = CameraMapping({"cam-01": {"device_id": 1, "branch_id": 1}})
-    assert mapping.resolve("cam-01") == (1, 2)
+    assert mapping.resolve("cam-01") == (1, 1)
     assert mapping.contains("cam-01")
     with pytest.raises(CameraNotMappedError):
         mapping.resolve("cam-02")
@@ -103,7 +103,8 @@ def test_erp_db_config_defaults() -> None:
     assert cfg.user == "root"
     assert cfg.employee_table == "ct_hr_employee_master"
     assert cfg.employee_code_column == "emp_code"
-    assert cfg.employee_id_column == "attendance_thumb_id_no"
+    assert cfg.employee_id_column == "emp_id"
+    assert cfg.employee_active_filter == "_status"
 
 
 # --- service ------------------------------------------------------------------

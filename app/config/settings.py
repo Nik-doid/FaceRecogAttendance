@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Annotated, Literal
-from pathlib import Path
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -71,10 +70,8 @@ class Settings(BaseSettings):
     ]
 
     # --- Employee photo source (the existing system) --------------------------
-    employee_photos_source: Annotated[list[str], NoDecode] = [
-        "https://classicis.classic.com.np/uploads/employees",
-        "https://erp.nnet.com.np/uploads/employees",
-        "https://erp.n-tech.com.np/uploads/employees"
+    employee_photos_source: Annotated[list[Path], NoDecode] = [
+        APP_ROOT / "uploads" / "employees"
     ]
 
     # --- Attendance reporting (message queue to the existing system) ----------
@@ -107,15 +104,15 @@ class Settings(BaseSettings):
     erp_in_out_mode: str = "toggle"
     erp_sync_interval_seconds: int = 300
     erp_sync_batch_size: int = 500
-    # Employee code -> ERP attendance id lookup (the C# report joins
-    # ct_hr_employee_master.emp_code -> attendance_thumb_id_no and uses that as the
-    # attendance_id_no written to the log). Table + columns are configurable here.
+    # Employee code -> ERP attendance id lookup. The C# report selects
+    # ct_hr_employee_master.emp_id / attendance_thumb_id_no and uses the id as the
+    # attendance_id_no written to the log; table + columns are configurable here.
     erp_employee_table: str = "ct_hr_employee_master"
     erp_employee_code_column: str = "emp_code"
-    erp_employee_id_column: str = "attendance_thumb_id_no"
-    # Optional extra WHERE clause applied to the employee lookup, e.g.
-    # "_status='employed' AND is_deleted_flag='n'" (used by the C# software).
-    erp_employee_active_filter: str = ""
+    erp_employee_id_column: str = "emp_id"
+    # Optional extra WHERE clause applied to the employee lookup (the C# software
+    # filters on `_status`, e.g. `_status='employed'`).
+    erp_employee_active_filter: str = "_status"
 
     # --- This service's own database -----------------------------------------
     database_url: str = "postgresql+asyncpg://face:face@localhost:5432/face_recognition"

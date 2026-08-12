@@ -6,10 +6,10 @@ mirroring the C# software's INSERT. On success each row is stamped ``erp_synced_
 the cron never re-inserts (idempotent).
 
 The employee code recorded by recognition is resolved to the ERP attendance id via the
-``ct_hr_employee_master``-style table (``attendance_thumb_id_no``), exactly like the C#
-software. In/out mode follows the ERP state for that employee+day, so a punch the C#
-software already recorded is never written twice, and attendance snapshots are only kept
-for events that were actually saved to the ERP DB.
+``ct_hr_employee_master``-style table, exactly like the C# software. In/out mode follows
+the ERP state for that employee+day, so a punch the C# software already recorded is never
+written twice, and attendance snapshots are only kept for events that were actually saved
+to the ERP DB.
 """
 
 from __future__ import annotations

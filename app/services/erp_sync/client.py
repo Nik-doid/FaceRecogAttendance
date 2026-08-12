@@ -34,8 +34,8 @@ class ErpDbConfig:
     # Employee code -> attendance id lookup (mirrors ct_hr_employee_master in C#).
     employee_table: str = "ct_hr_employee_master"
     employee_code_column: str = "emp_code"
-    employee_id_column: str = "attendance_thumb_id_no"
-    employee_active_filter: str = ""
+    employee_id_column: str = "emp_id"
+    employee_active_filter: str = "_status"
 
 
 class ErpMysqlClient:
@@ -88,7 +88,7 @@ class ErpMysqlClient:
         """Resolve an employee code to its ERP attendance id (numeric enroll number).
 
         Mirrors the C# lookup chain: ``ct_hr_employee_master.emp_code`` ->
-        ``attendance_thumb_id_no`` == the ``attendance_id_no`` written to the log.
+        ``emp_id``, written as the ``attendance_id_no`` in the log.
         """
         conn = None
         try:
