@@ -16,7 +16,15 @@ AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
 
 FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
 APP_FILE = str(FRONTEND_DIR / "app.py")
-PAGES = ["Dashboard", "Enrollment", "Recognition Logs", "Unknown Faces", "Metrics", "API Console"]
+PAGES = [
+    "Dashboard",
+    "Enrollment",
+    "Recognition Logs",
+    "Unknown Faces",
+    "Metrics",
+    "ERP Sync",
+    "API Console",
+]
 
 
 def _make_app(page: str = "Dashboard") -> AppTest:

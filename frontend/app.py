@@ -1,12 +1,13 @@
-"""Streamlit debug console for the Face Recognition service.
+"""Streamlit dashboard for the Face Recognition service.
 
 Run from the project root:
     uv sync --extra frontend
     uv run streamlit run frontend/app.py
 
-The console auto-signs a JWT with the same secret the running service uses (from
-``.env``), so every admin operation (camera start/stop, index rebuild) works out of
-the box against ``http://localhost:8000``.
+The dashboard auto-signs a JWT with the same secret the running service uses (from
+``.env``), so every admin operation (camera start/stop, index rebuild, ERP sync)
+works out of the box against ``http://localhost:8000``. Status is fetched once per
+page render — hit a button to re-check — there is no background polling loop.
 """
 
 from __future__ import annotations
@@ -36,33 +37,105 @@ PAGES = [
     "Recognition Logs",
     "Unknown Faces",
     "Metrics",
+    "ERP Sync",
     "API Console",
 ]
-LIVE_PAGES = {"Dashboard", "Recognition Logs", "Unknown Faces", "Metrics"}
 
 
 # ---------------------------------------------------------------------------
-# helpers
+# styling
 # ---------------------------------------------------------------------------
 def inject_css() -> None:
     st.markdown(
         """
         <style>
-        .block-container { padding-top: 1.6rem; max-width: 1280px; margin: 0 auto; }
-        div[data-testid="stMetric"] {
-            background: #f4f7fb; border: 1px solid #e2e8f0; border-radius: 12px;
-            padding: 10px 14px; box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
+        .block-container { padding-top: 1.2rem; padding-bottom: 3rem;
+            max-width: 1400px; margin: 0 auto; }
+        [data-testid="stAppViewContainer"] { background: #f5f7fb; }
+        [data-testid="stSidebar"] { background: #0f172a; border-right: 1px solid #1e293b; }
+        [data-testid="stSidebar"] .block-container { padding-top: 1.4rem; }
+        [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3, [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] label { color: #e2e8f0; }
+        [data-testid="stSidebar"] [data-baseweb="input"] input { color: #e2e8f0; }
+        [data-testid="stSidebar"] .stCodeBlock pre { color: #cbd5e1; }
+        [data-testid="stSidebar"] .stCodeBlock { background: #1e293b; }
+
+        h1, h2, h3 { color: #0f172a; letter-spacing: -0.01em; }
+        .hero {
+            background: linear-gradient(135deg, #1e3a8a 0%, #4338ca 100%);
+            color: #ffffff; border-radius: 16px; padding: 20px 24px; margin-bottom: 1.1rem;
+            box-shadow: 0 6px 20px rgb(30 58 138 / 0.25);
         }
-        div[data-testid="stMetric"] label { color: #475569; }
-        h1, h2, h3 { letter-spacing: -0.01em; }
-        [data-testid="stSidebar"] { border-right: 1px solid #e2e8f0; }
+        .hero h1 { color: #ffffff; margin: 0 0 4px 0; font-size: 1.7rem; }
+        .hero p { margin: 0; color: #dbeafe; font-size: 0.95rem; }
+
+        div[data-testid="stMetric"] {
+            background: #ffffff; border: 1px solid #e2e8f0; border-radius: 14px;
+            padding: 12px 16px; box-shadow: 0 1px 3px rgb(0 0 0 / 0.06);
+            height: 100%;
+        }
+        div[data-testid="stMetric"] label { color: #64748b; font-weight: 600; }
+        div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+            font-size: 1.6rem; font-weight: 700; color: #0f172a;
+        }
+
+        .card {
+            background: #ffffff; border: 1px solid #e2e8f0; border-radius: 14px;
+            padding: 16px 18px; box-shadow: 0 1px 3px rgb(0 0 0 / 0.06);
+            margin-bottom: 1rem;
+        }
+        .card h4 { margin: 0 0 10px 0; color: #0f172a; font-size: 1.05rem; }
+        .feed-wrap {
+            background: #000; border-radius: 14px; overflow: hidden;
+            border: 1px solid #cbd5e1; box-shadow: 0 4px 16px rgb(0 0 0 / 0.18);
+        }
+        .feed-wrap img { width: 100%; display: block; }
+        .section-title { margin-top: 1.4rem; margin-bottom: 0.4rem; font-weight: 700;
+            color: #0f172a; }
+        [data-testid="stDataFrame"] { border: 1px solid #e2e8f0; border-radius: 10px;
+            overflow: hidden; }
+        .stButton > button { border-radius: 10px; font-weight: 600; }
+        .stButton > button[kind="primary"] { background: #2563eb; border: 1px solid #2563eb; }
         footer { visibility: hidden; }
+        @media (max-width: 768px) {
+            [data-testid="stHorizontalBlock"] { flex-wrap: wrap; }
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
+def pill(text: str, tone: str = "info") -> str:
+    """Inline HTML badge for status values."""
+    colors = {
+        "ok": "background:#dcfce7;color:#166534;",
+        "warn": "background:#fef3c7;color:#92400e;",
+        "err": "background:#fee2e2;color:#991b1b;",
+        "info": "background:#dbeafe;color:#1e40af;",
+        "muted": "background:#f1f5f9;color:#475569;",
+    }
+    style = colors.get(tone, colors["info"])
+    return (
+        f'<span style="{style}padding:3px 12px;border-radius:999px;'
+        f'font-size:0.85rem;font-weight:600;display:inline-block;">{text}</span>'
+    )
+
+
+def status_tone(value: str | None) -> str:
+    if not value:
+        return "muted"
+    if value in ("running", "ok", "up", "idle"):
+        return "ok"
+    if value in ("building", "degraded"):
+        return "warn"
+    return "err"
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
 def fmt_ts(value: Any) -> str:
     if not value:
         return "—"
@@ -115,6 +188,16 @@ def _parse_metrics(text: str) -> dict[str, float]:
     return out
 
 
+def action_feedback(result: Any | None, ok_message: str) -> None:
+    """Render the standard outcome of a button-triggered admin action."""
+    if result is None:
+        return
+    if isinstance(result, dict) and result.get("ok") is False:
+        st.error(result.get("detail", "action failed"))
+    else:
+        st.success(ok_message)
+
+
 # ---------------------------------------------------------------------------
 # sidebar
 # ---------------------------------------------------------------------------
@@ -129,8 +212,14 @@ def _generate(ss: Any, secret: str, algorithm: str, expire: int) -> None:
 
 
 def render_sidebar(ss: Any) -> None:
-    st.title("🎥 Face Recognition")
-    st.caption("Debug console · /api/v1")
+    st.markdown(
+        '<div style="background:#1e293b;border-radius:12px;padding:14px 16px;'
+        'margin-bottom:6px;">'
+        '<div style="font-size:1.25rem;font-weight:700;color:#ffffff;">🎥 Face Recognition</div>'
+        '<div style="color:#94a3b8;font-size:0.85rem;">attendance service dashboard</div>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
     url = st.text_input("API base URL", value=ss.base_url, key="base_url_input")
     ss.base_url = url.strip().rstrip("/") or ss.base_url
@@ -140,7 +229,7 @@ def render_sidebar(ss: Any) -> None:
     else:
         ss.client.set_token(ss.token)
 
-    if st.button("Test connection", width="stretch"):
+    if st.button("🔌 Test connection", width="stretch"):
         health = call(ss.client, ss.client.health)
         if health:
             st.success(
@@ -149,7 +238,7 @@ def render_sidebar(ss: Any) -> None:
             )
 
     st.divider()
-    st.subheader("🔑 JWT")
+    st.markdown("##### 🔑 Admin JWT")
     subject = st.text_input("Subject", value=ss.subject, key="subject_input")
     ss.subject = subject.strip() or "debug-user"
     with st.expander("JWT settings", expanded=False):
@@ -205,17 +294,29 @@ def render_sidebar(ss: Any) -> None:
                 ss.payload = None
 
     st.divider()
-    ss.auto_refresh = st.toggle("Auto-refresh", value=ss.auto_refresh)
-    ss["interval"] = st.slider("Refresh interval (s)", 1, 15, 3)
-    st.divider()
-    st.radio("Page", PAGES, key="nav", label_visibility="collapsed")
+    st.radio("Navigation", PAGES, key="nav", label_visibility="collapsed")
+
+
+def hero(title: str, subtitle: str) -> None:
+    st.markdown(
+        f'<div class="hero"><h1>{title}</h1><p>{subtitle}</p></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def refresh_button() -> None:
+    """Single manual refresh — the dashboard never polls on its own."""
+    if st.button("🔄 Refresh", key="refresh_once", type="secondary"):
+        st.rerun()
 
 
 # ---------------------------------------------------------------------------
 # pages
 # ---------------------------------------------------------------------------
 def page_dashboard(client: ApiClient) -> None:
-    st.subheader("System health")
+    hero("Dashboard", "Service health, live camera and quick controls.")
+    refresh_button()
+
     health = call(client, client.health)
     index = call(client, client.index_status)
     cam = call(client, client.camera_status)
@@ -233,16 +334,64 @@ def page_dashboard(client: ApiClient) -> None:
     if running:
         stream_url = f"{client.base_url}/api/v1/camera/stream"
         st.markdown(
-            f'<img src="{stream_url}" style="width:100%;border-radius:10px;'
-            'border:1px solid #e2e8f0;display:block;" alt="live camera feed">',
+            f'<div class="feed-wrap"><img src="{stream_url}" alt="live camera feed"></div>',
             unsafe_allow_html=True,
         )
-        st.caption("Live feed · recognized faces appear under Recent activity below.")
+        st.caption(
+            "Detected faces are boxed live — green = recognized employee, "
+            "red = unknown, orange = spoof, gray = low quality."
+        )
     else:
-        st.info("Camera is stopped — start it below to see the live feed.")
+        st.info("Camera is stopped — use Start camera below to see the live feed.")
 
-    st.divider()
-    st.markdown("#### Recent activity")
+    st.markdown('<div class="section-title">Quick controls</div>', unsafe_allow_html=True)
+    left, right = st.columns(2)
+    with left:
+        st.markdown('<div class="card"><h4>🎥 Camera</h4>', unsafe_allow_html=True)
+        if cam:
+            st.markdown(
+                f"{pill(cam.get('status', '—'), status_tone(cam.get('status')))} "
+                f"<span style='color:#64748b'>· {cam.get('camera_id')}</span>",
+                unsafe_allow_html=True,
+            )
+            if cam.get("last_connected_at"):
+                st.caption(f"last connected: {fmt_ts(cam.get('last_connected_at'))}")
+            if cam.get("last_error"):
+                st.warning(f"last error: {cam.get('last_error')}")
+            label = "⏹ Stop camera" if running else "▶ Start camera"
+            if st.button(label, key="cam_toggle", width="stretch"):
+                result = call(client, client.camera_stop if running else client.camera_start)
+                action_feedback(
+                    result,
+                    f"Camera {result.get('action')} → {result.get('status')}" if result else "",
+                )
+                st.rerun()
+        else:
+            st.info("Camera status unavailable.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with right:
+        st.markdown('<div class="card"><h4>🧠 Face index</h4>', unsafe_allow_html=True)
+        if index:
+            building = index.get("status") == "building"
+            st.markdown(
+                f"{pill(index.get('status', '—'), status_tone(index.get('status')))} "
+                f"<span style='color:#64748b'>· {index.get('size')} embeddings "
+                f"· {index.get('employees')} employees</span>",
+                unsafe_allow_html=True,
+            )
+            st.caption(f"last built: {fmt_ts(index.get('last_built_at'))}")
+            if index.get("last_error"):
+                st.error(f"last error: {index.get('last_error')}")
+            if st.button("🔄 Rebuild index", key="rebuild", width="stretch", disabled=building):
+                result = call(client, client.index_rebuild)
+                action_feedback(result, result.get("message", "rebuild started") if result else "")
+                st.rerun()
+        else:
+            st.info("Index status unavailable.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="section-title">Recent activity</div>', unsafe_allow_html=True)
     recent_logs = call(client, lambda: client.recognition_logs(limit=8))
     recent_unknown = call(client, lambda: client.unknown_faces(limit=5))
     left, right = st.columns(2)
@@ -267,49 +416,6 @@ def page_dashboard(client: ApiClient) -> None:
             st.dataframe(df[["time", "track_id"]], width="stretch", hide_index=True)
         else:
             st.caption("No unknown faces yet.")
-
-    st.divider()
-    left, right = st.columns(2)
-    with left:
-        st.markdown("#### Camera")
-        if cam:
-            running = cam.get("status") == "running"
-            st.metric("State", cam.get("status"))
-            st.caption(f"camera_id: {cam.get('camera_id')}")
-            if cam.get("last_connected_at"):
-                st.caption(f"last connected: {fmt_ts(cam.get('last_connected_at'))}")
-            if cam.get("last_error"):
-                st.warning(f"last error: {cam.get('last_error')}")
-            label = "⏹ Stop camera" if running else "▶ Start camera"
-            if st.button(label, key="cam_toggle", width="stretch"):
-                result = call(client, client.camera_stop if running else client.camera_start)
-                if result:
-                    st.success(f"Camera {result.get('action')} → {result.get('status')}")
-                    time.sleep(0.3)
-                    st.rerun()
-        else:
-            st.info("Camera status unavailable.")
-    with right:
-        st.markdown("#### Face index")
-        if index:
-            building = index.get("status") == "building"
-            st.metric("Status", index.get("status"))
-            c1, c2 = st.columns(2)
-            c1.metric("Embeddings", index.get("size"))
-            c2.metric("Employees", index.get("employees"))
-            st.caption(f"last built: {fmt_ts(index.get('last_built_at'))}")
-            if index.get("last_error"):
-                st.error(f"last error: {index.get('last_error')}")
-            if st.button("🔄 Rebuild index", key="rebuild", width="stretch", disabled=building):
-                result = call(client, client.index_rebuild)
-                if result:
-                    st.success(result.get("message", "rebuild started"))
-                    time.sleep(0.3)
-                    st.rerun()
-        else:
-            st.info("Index status unavailable.")
-
-    st.session_state["_index_status"] = index
 
 
 def _save_enrollment(code: str, upload: Any) -> Path:
@@ -359,7 +465,7 @@ def _employee_previews(rows: list[dict[str, Any]]) -> None:
 
 
 def page_enrollment(client: ApiClient) -> None:
-    st.subheader("Enroll an employee")
+    hero("Enrollment", "Add employee photos so the face index can match them.")
     info = call(client, client.build_info)
     if info and info.get("detail"):
         st.caption("Server reads photos from: " + str(info.get("detail")))
@@ -392,10 +498,8 @@ def page_enrollment(client: ApiClient) -> None:
 
     if st.button("🔄 Rebuild index now", type="primary", width="stretch"):
         result = call(client, client.index_rebuild)
-        if result:
-            st.success(result.get("message", "rebuild started"))
-            time.sleep(0.3)
-            st.rerun()
+        action_feedback(result, result.get("message", "rebuild started") if result else "")
+        st.rerun()
     st.caption("Tip: after rebuilding, watch the Dashboard — the embedding count grows.")
 
 
@@ -420,7 +524,8 @@ def _preview_picker(df: pd.DataFrame, key_prefix: str) -> None:
 
 
 def page_logs(client: ApiClient) -> None:
-    st.subheader("Recognition logs")
+    hero("Recognition Logs", "Every recognition decision recorded by the worker.")
+    refresh_button()
     c1, c2 = st.columns([1, 2])
     limit = int(c1.number_input("Limit", 10, 500, 50, 10))
     code = c2.text_input("Filter by employee code (empty = all)")
@@ -450,7 +555,8 @@ def page_logs(client: ApiClient) -> None:
 
 
 def page_unknown(client: ApiClient) -> None:
-    st.subheader("Unknown faces")
+    hero("Unknown Faces", "People the index could not match.")
+    refresh_button()
     limit = int(st.number_input("Limit", 10, 500, 50, 10))
     data = call(client, lambda: client.unknown_faces(limit))
     if data is None:
@@ -472,7 +578,8 @@ def page_unknown(client: ApiClient) -> None:
 
 
 def page_metrics(client: ApiClient) -> None:
-    st.subheader("Prometheus metrics")
+    hero("Metrics", "Prometheus counters and gauges from /metrics.")
+    refresh_button()
     text = call(client, client.metrics)
     if text is None:
         return
@@ -489,6 +596,9 @@ def page_metrics(client: ApiClient) -> None:
         "face_camera_reconnects_total": "Camera reconnects",
         "face_index_size": "Index size",
         "face_camera_connected": "Camera connected",
+        "face_erp_sync_inserted_total": "ERP rows inserted",
+        "face_erp_sync_failed_total": "ERP rows failed",
+        "face_erp_sync_pending": "ERP pending",
     }
     cols = st.columns(3)
     for i, (name, label) in enumerate(key_metrics.items()):
@@ -498,8 +608,44 @@ def page_metrics(client: ApiClient) -> None:
         st.code(text, language="text")
 
 
+def page_erp_sync(client: ApiClient) -> None:
+    hero("ERP Sync", "Push recognized attendance events into the ERP attendance log.")
+    refresh_button()
+
+    left, right = st.columns(2)
+    with left:
+        st.markdown('<div class="card"><h4>📡 Sync status</h4>', unsafe_allow_html=True)
+        status = call(client, client.erp_sync_status)
+        if status:
+            enabled_tone = "ok" if status.get("enabled") else "muted"
+            enabled_label = "enabled" if status.get("enabled") else "disabled"
+            st.markdown(f"{pill(enabled_label, enabled_tone)}", unsafe_allow_html=True)
+            c1, c2 = st.columns(2)
+            c1.metric("Pending events", status.get("pending"))
+            c2.metric("Interval (s)", status.get("interval_seconds") or "—")
+            st.caption(status.get("message") or "")
+        else:
+            st.info("Sync status unavailable.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with right:
+        st.markdown('<div class="card"><h4>▶ Run sync now</h4>', unsafe_allow_html=True)
+        st.caption("POST /api/v1/sync/attendance-log — writes pending recognitions to the ERP DB.")
+        if st.button("🚀 Run ERP sync", type="primary", width="stretch"):
+            result = call(client, client.erp_sync_run)
+            if result:
+                stats = result.get("stats") or {}
+                action_feedback(
+                    result,
+                    "Sync finished — "
+                    f"scanned={stats.get('scanned')} inserted={stats.get('inserted')} "
+                    f"failed={stats.get('failed')}",
+                )
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
 def page_console(client: ApiClient) -> None:
-    st.subheader("API console")
+    hero("API Console", "Hit any /api/v1 endpoint directly.")
     st.caption("Requests are sent to {base}/api/v1{path}. Handy for poking endpoints without curl.")
     c1, c2 = st.columns([1, 2])
     method = c1.selectbox("Method", ["GET", "POST", "PUT", "DELETE", "PATCH"])
@@ -514,6 +660,7 @@ def page_console(client: ApiClient) -> None:
             except json.JSONDecodeError:
                 st.error("Body is not valid JSON.")
                 return
+
         def _send() -> Any:
             return client.request(method, path, json_body=body, auth=include_auth)
 
@@ -531,7 +678,7 @@ def page_console(client: ApiClient) -> None:
 # ---------------------------------------------------------------------------
 def main() -> None:
     st.set_page_config(
-        page_title="Face Recognition · Debug Console",
+        page_title="Face Recognition · Dashboard",
         page_icon="🎥",
         layout="wide",
         initial_sidebar_state="expanded",
@@ -544,7 +691,6 @@ def main() -> None:
     ss.setdefault("token", None)
     ss.setdefault("payload", None)
     ss.setdefault("client", None)
-    ss.setdefault("auto_refresh", True)
 
     with st.sidebar:
         render_sidebar(ss)
@@ -562,17 +708,10 @@ def main() -> None:
         page_unknown(client)
     elif page == "Metrics":
         page_metrics(client)
+    elif page == "ERP Sync":
+        page_erp_sync(client)
     else:
         page_console(client)
-
-    if page in LIVE_PAGES and ss.auto_refresh:
-        interval = int(ss.get("interval", 3))
-        if page == "Dashboard":
-            index = ss.get("_index_status") or {}
-            if index.get("status") == "building":
-                interval = 1
-        time.sleep(interval)
-        st.rerun()
 
 
 main()

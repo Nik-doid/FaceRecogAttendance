@@ -97,3 +97,9 @@ class ApiClient:
 
     def metrics(self) -> str:
         return self.request("GET", "/metrics", raw=True)
+
+    def erp_sync_status(self) -> dict[str, Any]:
+        return self.request("GET", "/sync/attendance-log/status")
+
+    def erp_sync_run(self) -> dict[str, Any]:
+        return self.request("POST", "/sync/attendance-log", auth=True)

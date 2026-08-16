@@ -47,6 +47,7 @@ from app.services.settings_service import SettingsService
 from app.storage.snapshot import SnapshotStorage
 from app.workers.camera.reader import CameraReader
 from app.workers.frame_buffer import FrameBuffer
+from app.workers.recognition_loop.annotate import annotate_frame
 from app.workers.recognition_loop.pipeline import FaceEvent, RecognitionPipeline
 
 MIN_BACKOFF_SECONDS = 1.0
@@ -159,8 +160,6 @@ class RecognitionLoop:
                 self._reader.close()
                 return  # outer loop re-opens with backoff
 
-            self._frame_buffer.publish(frame)
-
             if self._frame_index % self._frame_skip != 0:
                 FRAMES_SKIPPED.inc()
                 self._frame_index += 1
@@ -168,6 +167,7 @@ class RecognitionLoop:
 
             self._frame_index += 1
             FRAMES_PROCESSED.inc()
+            events: list[FaceEvent] = []
             try:
                 with PROCESSING_TIME.time():
                     if self._tracker is None:
@@ -180,6 +180,8 @@ class RecognitionLoop:
                     self._handle_events(frame, events)
             except Exception:  # noqa: BLE001 - pipeline must never kill the loop
                 self._log.exception("frame processing failed")
+
+            self._frame_buffer.publish(annotate_frame(frame, events))
 
     # -- per-frame event handling ------------------------------------------------
     def _handle_events(self, frame: np.ndarray, events: list[FaceEvent]) -> None:
