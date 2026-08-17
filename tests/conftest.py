@@ -53,6 +53,7 @@ def test_settings(tmp_path) -> Settings:
         duplicate_timeout_seconds=60,
         liveness_enabled=False,
         tracking_enabled=False,
+        require_engagement=False,
         attendance_broker="null",
         database_url=f"sqlite+aiosqlite:///{tmp_path}/test.db",
         database_sync_url=f"sqlite:///{tmp_path}/test.db",

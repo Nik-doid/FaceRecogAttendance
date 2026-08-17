@@ -24,6 +24,20 @@ _INSERT = (
     "ON DUPLICATE KEY UPDATE attendance_id_no=attendance_id_no"
 )
 
+_UPDATE = (
+    "UPDATE ct_hr_employee_attendance_log "
+    "SET in_out_mode=%(in_out_mode)s, "
+    "verify_mode=%(verify_mode)s, "
+    "log_date_time=%(log_date_time)s, "
+    "device_id=%(device_id)s, "
+    "branch_id=%(branch_id)s, "
+    "created_by=%(created_by)s, "
+    "created_date=%(created_date)s, "
+    "log_date_only=%(log_date_only)s "
+    "WHERE attendance_id_no=%(attendance_id_no)s AND log_date_only=%(log_date_only)s "
+    "ORDER BY id DESC LIMIT 1"
+)
+
 @dataclass(frozen=True)
 class ErpDbConfig:
     host: str = "localhost"
@@ -83,6 +97,36 @@ class ErpMysqlClient:
     def insert_many(self, rows: list[dict[str, object]]) -> list[bool]:
         """Insert several rows. Returns a per-row success list (transactional per row)."""
         return [self.insert_row(r) for r in rows]
+
+    def update_row(self, row: dict[str, object]) -> bool:
+        """Update the latest attendance row for the employee+day. Returns True on success."""
+        conn = None
+        try:
+            conn = self._connect()
+            with conn.cursor() as cursor:
+                cursor.execute(_UPDATE, row)
+            return int(cursor.rowcount) > 0
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ERP update failed: %s", exc)
+            return False
+        finally:
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
+
+    def upsert_many(
+        self,
+        rows: list[dict[str, object]],
+        is_update: list[bool],
+    ) -> list[bool]:
+        """Upsert several rows. Returns a per-row success list."""
+        results: list[bool] = []
+        for row, do_update in zip(rows, is_update, strict=True):
+            if do_update:
+                results.append(self.update_row(row))
+            else:
+                results.append(self.insert_row(row))
+        return results
 
     def lookup_employee_id(self, employee_code: str) -> str | None:
         """Resolve an employee code to its ERP attendance id (numeric enroll number).

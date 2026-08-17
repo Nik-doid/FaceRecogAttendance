@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     liveness_enabled: bool = True
     silentface_threshold: float = 0.50
     tracking_enabled: bool = False
+    # Require employee to be "engaged" (looking at camera + waving) before recording attendance.
+    # When False, any quality-passed face triggers attendance (legacy behavior).
+    require_engagement: bool = True
 
     # --- Face quality gates --------------------------------------------------
     quality_min_blur: float = 100.0

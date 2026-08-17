@@ -198,8 +198,46 @@ class RecognitionLoop:
                 continue
             self._handle_match(frame, ev)
 
+    def _is_engaged(self, frame: np.ndarray, ev: FaceEvent) -> bool:
+        """Check if employee is engaged (looking at camera + waving).
+
+        Currently implements "looking at camera": face is large enough
+        (close to camera) and horizontally centered. Wave detection is a
+        placeholder (can be enabled when a hand detector is added).
+        """
+        # If engagement check is disabled, always allow
+        if not self._env.require_engagement:
+            return True
+
+        h, w = frame.shape[:2]
+        x1, y1, x2, y2 = (int(v) for v in ev.face.bbox)
+        face_w = x2 - x1
+        face_cx = (x1 + x2) / 2.0
+
+        # Face must be at least 30% of frame width (close enough)
+        min_face_ratio = 0.3
+        if face_w / w < min_face_ratio:
+            return False
+
+        # Face must be horizontally centered (looking at camera)
+        center_tolerance = 0.2  # within 20% of frame center
+        if abs(face_cx - w / 2.0) > w * center_tolerance:  # noqa: SIM103
+            return False
+
+        # Wave detection placeholder - enable when hand detector is added
+        # if self._settings.wave_detection_enabled:
+        #     return self._detect_wave(frame, ev)
+
+        return True
+
     def _handle_match(self, frame: np.ndarray, ev: FaceEvent) -> None:
         RECOGNITIONS.labels(ev.employee_code or "unknown").inc()
+
+        # Only capture attendance if employee is engaged (looking + waving)
+        if not self._is_engaged(frame, ev):
+            self._write_log(ev, reported=False, response="not_engaged")
+            return
+
         if not self._suppressor.check_and_record(ev.employee_code or ""):
             self._write_log(ev, reported=False, response="duplicate_suppressed")
             return
@@ -252,13 +290,12 @@ class RecognitionLoop:
 
     def _handle_unknown(self, frame: np.ndarray, ev: FaceEvent) -> None:
         UNKNOWN_FACES.inc()
-        path = self._snapshots.save(frame, prefix="unknown", track_id=ev.track_id)
         with self._session_factory() as session:
             self._unknown_repo.add_entry(
                 session,
                 camera_id=self._env.camera_id,
                 timestamp=datetime.now(UTC),
-                snapshot_path=str(path) if path else "not_saved",
+                snapshot_path="not_saved",
                 confidence_of_best_nonmatch=ev.best_score,
                 track_id=ev.track_id,
             )

@@ -19,22 +19,20 @@ class CameraNotMappedError(KeyError):
 class InOutResolver:
     """Decides the ``in_out_mode`` column value.
 
-    Supported policies (from ``erp_in_out_mode``):
-    - a literal int string (e.g. ``"1"``): every event uses that value (all check-ins);
-    - ``"toggle"``: proper per-employee-per-day rule — the first punch of the day is a
-      check-in(1), the second is a check-out(2), and any further punches that day are
-      skipped entirely (no duplicate check-ins/outs). The rule is seeded from rows
-      already present in ``ct_hr_employee_attendance_log`` for that employee/day, so a
-      punch already saved by the C# software is never written twice.
+    The ERP expects ``in_out_mode = 255`` for all punches. The first punch
+    of the day is inserted; subsequent punches on the same day for the same
+    employee update the existing row (check-out). No more than 2 rows per
+    employee per day (check-in + check-out).
     """
 
-    CHECK_IN = 1
-    CHECK_OUT = 2
+    MODE = 255
 
     def __init__(self, policy: str) -> None:
         self._policy = policy
-        # (attendance_id_no, log_date) -> in/out modes already seen (ERP + this run).
-        self._seen: dict[tuple[str, str], set[int]] = defaultdict(set)
+        # (attendance_id_no, log_date) -> punch count this run
+        self._count: dict[tuple[str, str], int] = defaultdict(int)
+        # (attendance_id_no, log_date) -> modes already seeded from ERP
+        self._seeded: dict[tuple[str, str], set[int]] = defaultdict(set)
 
     @property
     def policy(self) -> str:
@@ -42,33 +40,31 @@ class InOutResolver:
 
     def seed(self, attendance_id_no: str, log_date: date, modes: set[int]) -> None:
         """Pre-load the modes already present in the ERP log for this employee/day."""
-        self._seen[(attendance_id_no, log_date.isoformat())].update(modes)
+        self._seeded[(attendance_id_no, log_date.isoformat())].update(modes)
+        # If ERP already has a punch, count it
+        self._count[(attendance_id_no, log_date.isoformat())] = len(modes)
 
-    def resolve(self, attendance_id_no: str, log_date: date) -> int | None:
-        """Return the in_out_mode for this punch, or None to skip (duplicate).
+    def resolve(self, attendance_id_no: str, log_date: date) -> tuple[int | None, bool]:
+        """Return (in_out_mode, is_update) for this punch, or (None, False) to skip.
 
-        With a literal policy every event uses that value. With ``"toggle"`` the
-        first event of the day becomes a check-in, the second a check-out, and any
-        event after both exist for the day is skipped (None).
+        - First punch: returns (MODE, False) -> INSERT
+        - Second punch: returns (MODE, True) -> UPDATE
+        - Third+ punch: returns (None, False) -> skip
         """
-        if self._policy != "toggle":
-            try:
-                return int(self._policy)
-            except ValueError:
-                return self.CHECK_IN
         key = (attendance_id_no, log_date.isoformat())
-        seen = self._seen[key]
-        if self.CHECK_IN not in seen:
-            seen.add(self.CHECK_IN)
-            return self.CHECK_IN
-        if self.CHECK_OUT not in seen:
-            seen.add(self.CHECK_OUT)
-            return self.CHECK_OUT
-        return None
+        count = self._count[key]
+
+        if count >= 2:
+            return None, False
+
+        self._count[key] = count + 1
+        is_update = count >= 1
+        return self.MODE, is_update
 
     def reset(self) -> None:
         """Clear per-day state (e.g. after a sync run)."""
-        self._seen.clear()
+        self._count.clear()
+        self._seeded.clear()
 
 
 class CameraMapping:
