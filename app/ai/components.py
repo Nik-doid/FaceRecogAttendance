@@ -12,7 +12,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.ai.detector.base import Detector
+from app.ai.detector.hand import HandDetector
 from app.ai.detector.scrfd import SCRFDDetector
+from app.ai.gesture.wave import WaveTracker
 from app.ai.liveness.base import LivenessChecker
 from app.ai.liveness.silentface import SilentFaceLiveness
 from app.ai.quality.quality import FaceQualityChecker
@@ -27,6 +29,8 @@ class AIComponents:
     recognizer: Recognizer
     liveness: LivenessChecker
     quality: FaceQualityChecker
+    hand_detector: HandDetector
+    wave_tracker: WaveTracker
 
 
 def load_ai_components(settings: Settings) -> AIComponents:
@@ -57,7 +61,6 @@ def load_ai_components(settings: Settings) -> AIComponents:
             providers=providers,
         )
     else:
-
         liveness = _PassThroughLiveness()
 
     quality = FaceQualityChecker(
@@ -68,11 +71,21 @@ def load_ai_components(settings: Settings) -> AIComponents:
         max_roll_deg=settings.quality_max_roll_deg,
     )
 
+    hand_detector = HandDetector(
+        model_path=settings.models_dir / "hand_landmarker.task",
+        max_num_hands=2,
+        min_detection_confidence=0.7,
+        min_tracking_confidence=0.5,
+    )
+    wave_tracker = WaveTracker()
+
     return AIComponents(
         detector=detector,
         recognizer=recognizer,
         liveness=liveness,
         quality=quality,
+        hand_detector=hand_detector,
+        wave_tracker=wave_tracker,
     )
 
 

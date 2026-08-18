@@ -10,6 +10,8 @@ from __future__ import annotations
 import numpy as np
 
 from app.ai.components import AIComponents
+from app.ai.detector.hand import HandLandmarks
+from app.ai.gesture.wave import WaveTracker
 from app.ai.liveness.base import LivenessChecker
 from app.ai.quality.quality import FaceQualityChecker, QualityReport
 from app.ai.recognizer.base import Recognizer
@@ -95,10 +97,24 @@ def face_at(x1: int, y1: int, x2: int, y2: int, eye_x: float) -> DetectedFace:
     return DetectedFace(bbox=(float(x1), float(y1), float(x2), float(y2)), score=0.99, kps=kps)
 
 
+class FakeHandDetector:
+    """Returns no hands by default; configurable via ``hands_to_return``."""
+
+    def __init__(self, hands_to_return: list[HandLandmarks] | None = None) -> None:
+        self.hands_to_return = hands_to_return or []
+        self.calls = 0
+
+    def detect(self, image_bgr: np.ndarray) -> list[HandLandmarks]:
+        self.calls += 1
+        return list(self.hands_to_return)
+
+
 def build_ai(embedding_left: np.ndarray, embedding_right: np.ndarray) -> AIComponents:
     return AIComponents(
         detector=FakeDetector(),
         recognizer=FakeRecognizer(embedding_left, embedding_right),
         liveness=FakeLiveness(),
         quality=PermissiveQuality(),
+        hand_detector=FakeHandDetector(),  # type: ignore[arg-type]
+        wave_tracker=WaveTracker(),
     )

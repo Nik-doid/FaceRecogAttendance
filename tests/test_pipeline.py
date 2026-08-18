@@ -6,9 +6,10 @@ import numpy as np
 
 from app.ai.components import AIComponents
 from app.ai.faiss.index import FaceIndex
+from app.ai.gesture.wave import WaveTracker
 from app.ai.liveness.base import LivenessChecker
 from app.workers.recognition_loop.pipeline import RecognitionPipeline
-from tests.fakes import FakeDetector, FakeRecognizer, PermissiveQuality, face_at
+from tests.fakes import FakeDetector, FakeHandDetector, FakeRecognizer, PermissiveQuality, face_at
 
 E1 = np.full(8, 0.5, dtype="float32")
 E2 = np.full(8, -0.5, dtype="float32")
@@ -24,6 +25,8 @@ def build_pipeline(
         recognizer=FakeRecognizer(E1, E2),
         liveness=liveness or _live(),
         quality=PermissiveQuality(),
+        hand_detector=FakeHandDetector(),  # type: ignore[arg-type]
+        wave_tracker=WaveTracker(),
     )
     idx = index or FaceIndex(dim=8)
     if index is None:
@@ -87,6 +90,8 @@ def test_quality_rejection_never_embeds() -> None:
         recognizer=FakeRecognizer(E1, E2),
         liveness=_live(),
         quality=RejectQuality(),
+        hand_detector=FakeHandDetector(),  # type: ignore[arg-type]
+        wave_tracker=WaveTracker(),
     )
     idx = FaceIndex(dim=8)
     idx.add(E1, "EMP1")

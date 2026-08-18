@@ -24,7 +24,12 @@ async def camera_status(container: ContainerDep) -> CameraStatusResponse:
     with db_session() as session:
         row = await run_db(container.camera_repo.get_by_id, session, camera_id)
 
-    status_str = "running" if worker.running else (row.status if row else "stopped")
+    # Thread alive + DB status = actual camera state (running/error).
+    # Thread dead = camera is not running, regardless of stale DB value.
+    if worker.running:
+        status_str = row.status if row and row.status else "running"
+    else:
+        status_str = "stopped"
     return CameraStatusResponse(
         camera_id=camera_id,
         status=status_str,

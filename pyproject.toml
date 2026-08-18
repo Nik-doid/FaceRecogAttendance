@@ -26,6 +26,7 @@ dependencies = [
     # faiss is part of the core pipeline (in-memory embedding index) and has plain
     # Windows/manylinux wheels, so it lives in base deps rather than the ai extra.
     "faiss-cpu>=1.8,<2.0",
+    "mediapipe>=1.0.1",
 ]
 
 [project.optional-dependencies]

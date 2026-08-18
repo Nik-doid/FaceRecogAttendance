@@ -330,16 +330,20 @@ def page_dashboard(client: ApiClient) -> None:
 
     st.divider()
     st.markdown("#### 📷 Live camera")
-    running = bool(cam and cam.get("status") == "running")
+    # Determine camera running status
+    cam_status = cam.get("status") if cam else None
+    running = cam_status == "running" if cam_status else False
     if running:
         stream_url = f"{client.base_url}/api/v1/camera/stream"
         st.markdown(
             f'<div class="feed-wrap"><img src="{stream_url}" alt="live camera feed"></div>',
             unsafe_allow_html=True,
         )
+        # Show engagement/Wave status box below the video
         st.caption(
-            "Detected faces are boxed live — green = recognized employee, "
-            "red = unknown, orange = spoof, gray = low quality."
+            "Detected faces are boxed live — green = recognized employee ✓ (looking + waved), "
+            "orange = engagement in progress, red = unknown, gray = low quality. "
+            "Employee name appears only after 2-second gaze + wave gesture."
         )
     else:
         st.info("Camera is stopped — use Start camera below to see the live feed.")
@@ -349,8 +353,9 @@ def page_dashboard(client: ApiClient) -> None:
     with left:
         st.markdown('<div class="card"><h4>🎥 Camera</h4>', unsafe_allow_html=True)
         if cam:
+            cam_status_val = cam.get("status") or "—"
             st.markdown(
-                f"{pill(cam.get('status', '—'), status_tone(cam.get('status')))} "
+                f"{pill(cam_status_val, status_tone(cam_status_val))} "
                 f"<span style='color:#64748b'>· {cam.get('camera_id')}</span>",
                 unsafe_allow_html=True,
             )
@@ -358,6 +363,7 @@ def page_dashboard(client: ApiClient) -> None:
                 st.caption(f"last connected: {fmt_ts(cam.get('last_connected_at'))}")
             if cam.get("last_error"):
                 st.warning(f"last error: {cam.get('last_error')}")
+            # Use the computed running state for the button label
             label = "⏹ Stop camera" if running else "▶ Start camera"
             if st.button(label, key="cam_toggle", width="stretch"):
                 result = call(client, client.camera_stop if running else client.camera_start)
@@ -401,11 +407,19 @@ def page_dashboard(client: ApiClient) -> None:
             df = pd.DataFrame(recent_logs["items"])
             df["time"] = pd.to_datetime(df["timestamp"]).dt.strftime("%H:%M:%S")
             df["conf"] = (df["confidence"].astype(float) * 100).round(1).astype(str) + " %"
-            st.dataframe(
-                df[["time", "employee_code", "conf", "reported"]],
-                width="stretch",
-                hide_index=True,
-            )
+            # Show engagement status column if available
+            if "attendance_response" in df.columns:
+                st.dataframe(
+                    df[["time", "employee_code", "conf", "attendance_response"]],
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.dataframe(
+                    df[["time", "employee_code", "conf", "reported"]],
+                    width="stretch",
+                    hide_index=True,
+                )
         else:
             st.caption("No recognitions yet.")
     with right:
@@ -416,6 +430,35 @@ def page_dashboard(client: ApiClient) -> None:
             st.dataframe(df[["time", "track_id"]], width="stretch", hide_index=True)
         else:
             st.caption("No unknown faces yet.")
+
+    # Engagement summary box
+    st.markdown("---")
+    st.markdown("#### 👁️ Engagement overview")
+    if recent_logs and recent_logs.get("items"):
+        df = pd.DataFrame(recent_logs["items"])
+        # Count engaged vs not-engaged
+        engaged_count = 0
+        not_engaged_count = 0
+        if "attendance_response" in df.columns:
+            for resp in df["attendance_response"]:
+                if isinstance(resp, str) and "attendance captured" in resp.lower():
+                    engaged_count += 1
+                else:
+                    not_engaged_count += 1
+        else:
+            # If no attendance_response, check employee_code presence
+            for _, row in df.iterrows():
+                if row.get("employee_code"):
+                    engaged_count += 1
+                else:
+                    not_engaged_count += 1
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Engaged + waved ✓", engaged_count)
+        with col2:
+            st.metric("Looking but no wave", not_engaged_count)
+    else:
+        st.caption("Start the camera to see engagement stats.")
 
 
 def _save_enrollment(code: str, upload: Any) -> Path:

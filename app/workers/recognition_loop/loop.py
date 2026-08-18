@@ -21,8 +21,10 @@ import numpy as np
 from sqlalchemy.orm import Session
 
 from app.ai.components import AIComponents
+from app.ai.detector.hand import HandLandmarks
 from app.ai.faiss.index import FaceIndex
 from app.ai.tracker.base import Tracker
+from app.ai.types import DetectedFace
 from app.config.settings import Settings
 from app.core.logging import get_logger
 from app.core.metrics import (
@@ -98,6 +100,16 @@ class RecognitionLoop:
         self._tuning_last_refresh = 0.0
         self._frame_skip = self._env.frame_skip
 
+        # Engagement tracking state per track_id
+        # track_id -> frames_looking_at_camera
+        self._looking_frames: dict[int, int] = {}
+        # track_id -> wave_detected (True after wave detected)
+        self._wave_detected: dict[int, bool] = {}
+        # track_id -> engagement_confirmed (both conditions met)
+        self._engagement_confirmed: dict[int, bool] = {}
+        # Required frames looking at camera (at ~30fps, 60 frames = 2 seconds)
+        self._required_looking_frames = 60
+
     # -- lifecycle --------------------------------------------------------------
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -168,6 +180,7 @@ class RecognitionLoop:
             self._frame_index += 1
             FRAMES_PROCESSED.inc()
             events: list[FaceEvent] = []
+            hands = self._ai.hand_detector.detect(frame)
             try:
                 with PROCESSING_TIME.time():
                     if self._tracker is None:
@@ -177,14 +190,19 @@ class RecognitionLoop:
                         tracked = self._tracker.update(detections)
                         tracking = [(t.track_id, t.face) for t in tracked]
                         events = self._pipeline.process_frame(frame, tracking=tracking)
-                    self._handle_events(frame, events)
+                    self._handle_events(frame, events, hands)
             except Exception:  # noqa: BLE001 - pipeline must never kill the loop
                 self._log.exception("frame processing failed")
 
-            self._frame_buffer.publish(annotate_frame(frame, events))
+            self._frame_buffer.publish(annotate_frame(frame, events, hands))
 
     # -- per-frame event handling ------------------------------------------------
-    def _handle_events(self, frame: np.ndarray, events: list[FaceEvent]) -> None:
+    def _handle_events(
+        self, frame: np.ndarray, events: list[FaceEvent], hands: list[HandLandmarks]
+    ) -> None:
+        # Update engagement state for each event
+        self._update_engagement(frame, events, hands)
+
         for ev in events:
             if not ev.quality_passed:
                 continue
@@ -198,37 +216,73 @@ class RecognitionLoop:
                 continue
             self._handle_match(frame, ev)
 
-    def _is_engaged(self, frame: np.ndarray, ev: FaceEvent) -> bool:
-        """Check if employee is engaged (looking at camera + waving).
+    def _update_engagement(
+        self, frame: np.ndarray, events: list[FaceEvent], hands: list[HandLandmarks]
+    ) -> None:
+        """Update engagement state per track_id based on looking + waving."""
+        if not self._env.require_engagement:
+            # Mark all as engaged if disabled
+            for ev in events:
+                if ev.track_id is not None:
+                    self._engagement_confirmed[ev.track_id] = True
+            return
 
-        Currently implements "looking at camera": face is large enough
-        (close to camera) and horizontally centered. Wave detection is a
-        placeholder (can be enabled when a hand detector is added).
-        """
-        # If engagement check is disabled, always allow
+        h, w = frame.shape[:2]
+
+        # Build a map of track_id -> face for quick lookup
+        face_by_track: dict[int, DetectedFace] = {}
+        for ev in events:
+            if ev.track_id is not None:
+                face_by_track[ev.track_id] = ev.face
+
+        # Update looking state for each tracked face
+        for track_id, face in face_by_track.items():
+            x1, y1, x2, y2 = (int(v) for v in face.bbox)
+            face_w = x2 - x1
+            face_cx = (x1 + x2) / 2.0
+
+            # Check if looking at camera (large + centered)
+            min_face_ratio = 0.3
+            center_tolerance = 0.2
+            looking = (
+                face_w / w >= min_face_ratio
+                and abs(face_cx - w / 2.0) <= w * center_tolerance
+            )
+
+            if looking:
+                self._looking_frames[track_id] = self._looking_frames.get(track_id, 0) + 1
+            else:
+                self._looking_frames[track_id] = 0
+                self._wave_detected[track_id] = False
+                self._engagement_confirmed[track_id] = False
+
+            # Check for wave using hand detector
+            if not self._wave_detected.get(track_id, False):
+                # Find hand near this face (same horizontal region)
+                for hand in hands:
+                    hand_cx = hand.points[:, 0].mean() * w
+                    if abs(hand_cx - face_cx) < w * 0.3:  # hand near face horizontally
+                        wrist_x_norm = hand.points[0, 0]  # wrist is landmark 0
+                        if self._ai.wave_tracker.update(track_id, wrist_x_norm):
+                            self._wave_detected[track_id] = True
+                            break
+
+            # Check if both conditions met (2 seconds looking + wave)
+            looking_frames = self._looking_frames.get(track_id, 0)
+            if looking_frames >= self._required_looking_frames and self._wave_detected.get(
+                track_id, False
+            ):
+                self._engagement_confirmed[track_id] = True
+
+    def _is_engaged(self, frame: np.ndarray, ev: FaceEvent) -> bool:
+        """Check if employee is engaged (looking at camera for 2s + waved)."""
         if not self._env.require_engagement:
             return True
 
-        h, w = frame.shape[:2]
-        x1, y1, x2, y2 = (int(v) for v in ev.face.bbox)
-        face_w = x2 - x1
-        face_cx = (x1 + x2) / 2.0
-
-        # Face must be at least 30% of frame width (close enough)
-        min_face_ratio = 0.3
-        if face_w / w < min_face_ratio:
+        track_id = ev.track_id
+        if track_id is None:
             return False
-
-        # Face must be horizontally centered (looking at camera)
-        center_tolerance = 0.2  # within 20% of frame center
-        if abs(face_cx - w / 2.0) > w * center_tolerance:  # noqa: SIM103
-            return False
-
-        # Wave detection placeholder - enable when hand detector is added
-        # if self._settings.wave_detection_enabled:
-        #     return self._detect_wave(frame, ev)
-
-        return True
+        return self._engagement_confirmed.get(track_id, False)
 
     def _handle_match(self, frame: np.ndarray, ev: FaceEvent) -> None:
         RECOGNITIONS.labels(ev.employee_code or "unknown").inc()
