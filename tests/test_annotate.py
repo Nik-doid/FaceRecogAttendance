@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import numpy as np
 
 from app.ai.detector.hand import HandLandmarks
@@ -51,11 +52,12 @@ def test_annotate_draws_engaged_label() -> None:
 def test_annotate_draws_unengaged_label() -> None:
     """When not yet engaged, show cyan engagement progress label."""
     frame = np.zeros((100, 120, 3), dtype=np.uint8)
+    now = time.monotonic()
     out = annotate_frame(
         frame,
         [_event(employee_code="EMP1")],
         engagement_confirmed={0: False},
-        looking_frames={0: 30},
+        looking_since={0: now - 1.0},  # 1 second of looking
     )
     assert out.shape == frame.shape
     # Cyan (255,255,0) must be present for unengaged recognized label
@@ -97,11 +99,12 @@ def test_annotate_draws_hand_landmarks() -> None:
 def test_annotate_progress_bar_appears() -> None:
     """A progress bar should be drawn under the face box when not engaged."""
     frame = np.zeros((100, 120, 3), dtype=np.uint8)
+    now = time.monotonic()
     out = annotate_frame(
         frame,
         [_event(employee_code="EMP1")],
         engagement_confirmed={0: False},
-        looking_frames={0: 30},
+        looking_since={0: now - 1.0},
     )
     # The progress bar uses cyan (0, 255, 255) pixels below the box
     # Just verify the output has changed from the blank frame

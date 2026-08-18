@@ -101,14 +101,12 @@ class RecognitionLoop:
         self._frame_skip = self._env.frame_skip
 
         # Engagement tracking state per track_id
-        # track_id -> frames_looking_at_camera
-        self._looking_frames: dict[int, int] = {}
+        # track_id -> monotonic timestamp when looking started (None if not currently looking)
+        self._looking_since: dict[int, float | None] = {}
         # track_id -> wave_detected (True after wave detected)
         self._wave_detected: dict[int, bool] = {}
         # track_id -> engagement_confirmed (both conditions met)
         self._engagement_confirmed: dict[int, bool] = {}
-        # Required frames looking at camera (at ~30fps, 60 frames = 2 seconds)
-        self._required_looking_frames = 60
 
     # -- lifecycle --------------------------------------------------------------
     def start(self) -> None:
@@ -194,7 +192,17 @@ class RecognitionLoop:
             except Exception:  # noqa: BLE001 - pipeline must never kill the loop
                 self._log.exception("frame processing failed")
 
-            self._frame_buffer.publish(annotate_frame(frame, events, hands))
+            self._frame_buffer.publish(
+                annotate_frame(
+                    frame,
+                    events,
+                    hands,
+                    engagement_confirmed=self._engagement_confirmed,
+                    looking_since=self._looking_since,
+                    wave_detected=self._wave_detected,
+                    required_seconds=self._env.engagement_required_seconds,
+                )
+            )
 
     # -- per-frame event handling ------------------------------------------------
     def _handle_events(
@@ -219,7 +227,17 @@ class RecognitionLoop:
     def _update_engagement(
         self, frame: np.ndarray, events: list[FaceEvent], hands: list[HandLandmarks]
     ) -> None:
-        """Update engagement state per track_id based on looking + waving."""
+        """Update engagement state per track_id based on looking + waving.
+
+        Engagement requires two conditions:
+        1. Face visible and large enough (configurable min_face_ratio, no center requirement)
+        2. Wave gesture detected
+
+        The face must meet condition 1 continuously for engagement_required_seconds
+        (wall-clock time, independent of frame_skip). If the face stops meeting
+        condition 1 before engagement is confirmed, the timer resets. Wave detection
+        also resets when looking is lost.
+        """
         if not self._env.require_engagement:
             # Mark all as engaged if disabled
             for ev in events:
@@ -228,6 +246,7 @@ class RecognitionLoop:
             return
 
         h, w = frame.shape[:2]
+        now = time.monotonic()
 
         # Build a map of track_id -> face for quick lookup
         face_by_track: dict[int, DetectedFace] = {}
@@ -235,30 +254,34 @@ class RecognitionLoop:
             if ev.track_id is not None:
                 face_by_track[ev.track_id] = ev.face
 
+        # Configurable thresholds
+        min_face_ratio = self._env.engagement_min_face_ratio
+        required_seconds = self._env.engagement_required_seconds
+
+        # Track which track_ids are currently in this frame
+        current_track_ids = set(face_by_track.keys())
+
         # Update looking state for each tracked face
         for track_id, face in face_by_track.items():
             x1, y1, x2, y2 = (int(v) for v in face.bbox)
             face_w = x2 - x1
-            face_cx = (x1 + x2) / 2.0
 
-            # Check if looking at camera (large + centered)
-            min_face_ratio = 0.3
-            center_tolerance = 0.2
-            looking = (
-                face_w / w >= min_face_ratio
-                and abs(face_cx - w / 2.0) <= w * center_tolerance
-            )
+            # Check if looking at camera (face large enough, no center requirement)
+            looking = face_w / w >= min_face_ratio
 
             if looking:
-                self._looking_frames[track_id] = self._looking_frames.get(track_id, 0) + 1
+                # Start or continue the looking timer
+                if self._looking_since.get(track_id) is None:
+                    self._looking_since[track_id] = now
             else:
-                self._looking_frames[track_id] = 0
+                # Not looking - reset all engagement state for this track
+                self._looking_since[track_id] = None
                 self._wave_detected[track_id] = False
                 self._engagement_confirmed[track_id] = False
 
             # Check for wave using hand detector
             if not self._wave_detected.get(track_id, False):
-                # Find hand near this face (same horizontal region)
+                face_cx = (x1 + x2) / 2.0
                 for hand in hands:
                     hand_cx = hand.points[:, 0].mean() * w
                     if abs(hand_cx - face_cx) < w * 0.3:  # hand near face horizontally
@@ -267,12 +290,21 @@ class RecognitionLoop:
                             self._wave_detected[track_id] = True
                             break
 
-            # Check if both conditions met (2 seconds looking + wave)
-            looking_frames = self._looking_frames.get(track_id, 0)
-            if looking_frames >= self._required_looking_frames and self._wave_detected.get(
-                track_id, False
+            # Check if both conditions met (required_seconds looking + wave)
+            looking_since = self._looking_since.get(track_id)
+            if (
+                looking_since is not None
+                and self._wave_detected.get(track_id, False)
+                and now - looking_since >= required_seconds
             ):
                 self._engagement_confirmed[track_id] = True
+
+        # Clean up state for track_ids that disappeared from the frame
+        for track_id in list(self._looking_since.keys()):
+            if track_id not in current_track_ids:
+                self._looking_since.pop(track_id, None)
+                self._wave_detected.pop(track_id, None)
+                self._engagement_confirmed.pop(track_id, None)
 
     def _is_engaged(self, frame: np.ndarray, ev: FaceEvent) -> bool:
         """Check if employee is engaged (looking at camera for 2s + waved)."""

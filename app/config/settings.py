@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     # When False, any quality-passed face triggers attendance (legacy behavior).
     require_engagement: bool = True
 
+    # --- Engagement (CCTV-optimized) -----------------------------------------
+    # Minimum face width as a fraction of frame width to consider the face "visible enough".
+    # CCTV cameras typically capture faces at 8-15% of frame width. Default 10%.
+    engagement_min_face_ratio: float = 0.10
+    # Required continuous engagement time in seconds (looking at camera + wave).
+    # This is wall-clock time, independent of frame_skip. Default 2.0 seconds.
+    engagement_required_seconds: float = 2.0
+
     # --- Face quality gates --------------------------------------------------
     quality_min_blur: float = 100.0
     quality_min_lighting: float = 40.0

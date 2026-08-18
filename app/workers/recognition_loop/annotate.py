@@ -7,6 +7,8 @@ frame buffer for the debug endpoints. The original frame is never mutated.
 
 from __future__ import annotations
 
+import time
+
 import cv2
 import numpy as np
 
@@ -28,9 +30,9 @@ def annotate_frame(
     events: list[FaceEvent],
     hands: list[HandLandmarks] | None = None,
     engagement_confirmed: dict[int, bool] | None = None,
-    looking_frames: dict[int, int] | None = None,
+    looking_since: dict[int, float | None] | None = None,
     wave_detected: dict[int, bool] | None = None,
-    required_frames: int = 60,
+    required_seconds: float = 2.0,
 ) -> np.ndarray:
     """Return a copy of ``frame_bgr`` with boxes, labels, and hand landmarks."""
     annotated = frame_bgr.copy()
@@ -60,12 +62,12 @@ def annotate_frame(
                 color = RECOGNIZED_COLOR
             else:
                 # Show engagement progress instead of name
-                looking_val = (
-                    looking_frames.get(track_id, 0)
-                    if looking_frames and track_id is not None
-                    else 0
-                )
-                progress = min(looking_val / 60 * 100, 100)
+                looking_val = 0.0
+                if looking_since and track_id is not None:
+                    start = looking_since.get(track_id)
+                    if start is not None:
+                        looking_val = time.monotonic() - start
+                progress = min(looking_val / required_seconds * 100, 100)
                 wave_icon = (
                     "w"
                     if wave_detected and track_id is not None and wave_detected.get(track_id, False)
@@ -108,12 +110,14 @@ def annotate_frame(
         )
 
         # Show engagement progress bar below box
-        if ev.employee_code and not engaged and looking_frames and track_id is not None:
-            looking_f = looking_frames.get(track_id, 0)
-            progress = min(looking_f / 60, 1.0)
-            bar_w = int((x2 - x1) * progress)
-            cv2.rectangle(annotated, (x1, y2 + 4), (x1 + bar_w, y2 + 10), (0, 255, 255), -1)
-            cv2.rectangle(annotated, (x1, y2 + 4), (x2, y2 + 10), (255, 255, 255), 1)
+        if ev.employee_code and not engaged and looking_since and track_id is not None:
+            start = looking_since.get(track_id)
+            if start is not None:
+                looking_val = time.monotonic() - start
+                progress = min(looking_val / required_seconds, 1.0)
+                bar_w = int((x2 - x1) * progress)
+                cv2.rectangle(annotated, (x1, y2 + 4), (x1 + bar_w, y2 + 10), (0, 255, 255), -1)
+                cv2.rectangle(annotated, (x1, y2 + 4), (x2, y2 + 10), (255, 255, 255), 1)
 
     return annotated
 

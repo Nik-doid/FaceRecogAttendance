@@ -26,10 +26,7 @@ async def camera_status(container: ContainerDep) -> CameraStatusResponse:
 
     # Thread alive + DB status = actual camera state (running/error).
     # Thread dead = camera is not running, regardless of stale DB value.
-    if worker.running:
-        status_str = row.status if row and row.status else "running"
-    else:
-        status_str = "stopped"
+    status_str = (row.status if row and row.status else "running") if worker.running else "stopped"
     return CameraStatusResponse(
         camera_id=camera_id,
         status=status_str,

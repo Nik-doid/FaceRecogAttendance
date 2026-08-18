@@ -62,24 +62,26 @@ class HandDetector:
             min_tracking_confidence=min_tracking_confidence,
         )
         self._detector = HandLandmarker.create_from_options(options)
+        self._timestamp_ms = 0
 
     def detect(self, image_bgr: np.ndarray) -> list[HandLandmarks]:
         """Detect hands in a BGR image. Returns list of HandLandmarks."""
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         mp_image = Image(image_format=ImageFormat.SRGB, data=image_rgb)
 
-        result = self._detector.detect_for_video(mp_image, timestamp_ms=0)
+        self._timestamp_ms += 33  # ~30 FPS
+        result = self._detector.detect_for_video(mp_image, timestamp_ms=self._timestamp_ms)
 
         hands: list[HandLandmarks] = []
-        if result.landmarks and result.handednesses:
-            for idx, lm_list in enumerate(result.landmarks):
+        if result.hand_landmarks and result.handedness:
+            for idx, lm_list in enumerate(result.hand_landmarks):
                 points = np.array(
                     [[lm.x, lm.y] for lm in lm_list],
                     dtype="float32",
                 )
                 handedness = "Right"
-                if idx < len(result.handednesses) and result.handednesses[idx]:
-                    handedness = result.handednesses[idx][0].category_name or "Right"
+                if idx < len(result.handedness) and result.handedness[idx]:
+                    handedness = result.handedness[idx][0].category_name or "Right"
                 hands.append(HandLandmarks(points=points, handedness=handedness, score=1.0))
 
         return hands
