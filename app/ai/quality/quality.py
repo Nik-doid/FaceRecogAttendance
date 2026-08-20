@@ -80,10 +80,6 @@ class FaceQualityChecker:
             report.reasons.append("face_too_small")
             report.scores["size"] = min(face.width, face.height)
 
-        if face_count > 1:
-            report.passed = False
-            report.reasons.append("multiple_faces")
-
         if x2 <= x1 or y2 <= y1:
             report.passed = False
             report.reasons.append("invalid_bbox")

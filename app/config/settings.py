@@ -57,12 +57,12 @@ class Settings(BaseSettings):
     require_engagement: bool = True
 
     # --- Engagement (CCTV-optimized) -----------------------------------------
-    # Minimum face width as a fraction of frame width to consider the face "visible enough".
-    # CCTV cameras typically capture faces at 8-15% of frame width. Default 10%.
-    engagement_min_face_ratio: float = 0.10
-    # Required continuous engagement time in seconds (looking at camera + wave).
-    # This is wall-clock time, independent of frame_skip. Default 2.0 seconds.
-    engagement_required_seconds: float = 2.0
+    # Minimum face width as a fraction of frame width.
+    # High-mounted CCTV captures small faces (3-8% of frame width). Default 3%.
+    engagement_min_face_ratio: float = 0.03
+    # Required continuous engagement time in seconds (looking + hand visible).
+    # Wall-clock time, independent of frame_skip. Default 1.0 second.
+    engagement_required_seconds: float = 1.0
 
     # --- Face quality gates --------------------------------------------------
     quality_min_blur: float = 100.0

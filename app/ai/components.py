@@ -73,9 +73,9 @@ def load_ai_components(settings: Settings) -> AIComponents:
 
     hand_detector = HandDetector(
         model_path=settings.models_dir / "hand_landmarker.task",
-        max_num_hands=2,
-        min_detection_confidence=0.7,
-        min_tracking_confidence=0.5,
+        max_num_hands=4,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.4,
     )
     wave_tracker = WaveTracker()
 

@@ -249,10 +249,17 @@ class RecognitionLoop:
         now = time.monotonic()
 
         # Build a map of track_id -> face for quick lookup
+        # Without a tracker, use quantised spatial hashing: faces at similar
+        # positions across frames get the same ID.  Grid size (100 px) is large
+        # enough to absorb normal face-detection jitter while keeping different
+        # people at different positions in distinct buckets.
         face_by_track: dict[int, DetectedFace] = {}
         for ev in events:
-            if ev.track_id is not None:
-                face_by_track[ev.track_id] = ev.face
+            track_id = ev.track_id
+            if track_id is None:
+                cx, cy = ev.face.center
+                track_id = int(cx // 100) * 10000 + int(cy // 100)
+            face_by_track[track_id] = ev.face
 
         # Configurable thresholds
         min_face_ratio = self._env.engagement_min_face_ratio
@@ -279,16 +286,15 @@ class RecognitionLoop:
                 self._wave_detected[track_id] = False
                 self._engagement_confirmed[track_id] = False
 
-            # Check for wave using hand detector
+            # Check for hand raised near face (high CCTV camera: wide zone,
+            # no vertical restriction — hands may appear below the face).
             if not self._wave_detected.get(track_id, False):
                 face_cx = (x1 + x2) / 2.0
                 for hand in hands:
                     hand_cx = hand.points[:, 0].mean() * w
-                    if abs(hand_cx - face_cx) < w * 0.3:  # hand near face horizontally
-                        wrist_x_norm = hand.points[0, 0]  # wrist is landmark 0
-                        if self._ai.wave_tracker.update(track_id, wrist_x_norm):
-                            self._wave_detected[track_id] = True
-                            break
+                    if abs(hand_cx - face_cx) < w * 0.5:
+                        self._wave_detected[track_id] = True
+                        break
 
             # Check if both conditions met (required_seconds looking + wave)
             looking_since = self._looking_since.get(track_id)
@@ -313,7 +319,8 @@ class RecognitionLoop:
 
         track_id = ev.track_id
         if track_id is None:
-            return False
+            cx, cy = ev.face.center
+            track_id = int(cx // 100) * 10000 + int(cy // 100)
         return self._engagement_confirmed.get(track_id, False)
 
     def _handle_match(self, frame: np.ndarray, ev: FaceEvent) -> None:

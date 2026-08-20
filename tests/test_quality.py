@@ -46,11 +46,12 @@ def test_face_too_small_rejected() -> None:
     assert "face_too_small" in report.reasons
 
 
-def test_multiple_faces_rejected() -> None:
+def test_multiple_faces_allowed() -> None:
+    """Multi-face frames are accepted (surveillance cameras see many faces)."""
     img, det = _image_with_face(_sharp_face())
     report = CHECKER.assess(img, det, face_count=3)
-    assert report.passed is False
-    assert "multiple_faces" in report.reasons
+    assert report.passed is True
+    assert "multiple_faces" not in report.reasons
 
 
 def test_poor_lighting_rejected() -> None:
