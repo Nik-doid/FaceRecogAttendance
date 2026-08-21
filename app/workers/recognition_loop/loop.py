@@ -227,15 +227,15 @@ class RecognitionLoop:
     def _update_engagement(
         self, frame: np.ndarray, events: list[FaceEvent], hands: list[HandLandmarks]
     ) -> None:
-        """Update engagement state per track_id based on looking + waving.
+        """Update engagement state per track_id based on looking + hand presence.
 
         Engagement requires two conditions:
-        1. Face visible and large enough (configurable min_face_ratio, no center requirement)
-        2. Wave gesture detected
+        1. Face visible and large enough (configurable min_face_ratio)
+        2. Hand detected near face horizontally
 
         The face must meet condition 1 continuously for engagement_required_seconds
         (wall-clock time, independent of frame_skip). If the face stops meeting
-        condition 1 before engagement is confirmed, the timer resets. Wave detection
+        condition 1 before engagement is confirmed, the timer resets. Hand detection
         also resets when looking is lost.
         """
         if not self._env.require_engagement:
@@ -276,25 +276,35 @@ class RecognitionLoop:
             # Check if looking at camera (face large enough, no center requirement)
             looking = face_w / w >= min_face_ratio
 
+            # DEBUG
+            print(f"[ENGAGE] track={track_id} face_w={face_w} frame_w={w} ratio={face_w/w:.3f} min={min_face_ratio} looking={looking}")
+
             if looking:
                 # Start or continue the looking timer
                 if self._looking_since.get(track_id) is None:
                     self._looking_since[track_id] = now
+                elapsed = now - self._looking_since[track_id]
+                print(f"[ENGAGE] track={track_id} looking since={self._looking_since[track_id]:.1f} elapsed={elapsed:.2f}s required={required_seconds}s wave={self._wave_detected.get(track_id, False)}")
+
+                # Check for hand raised near face (high CCTV camera: wide zone,
+                # no vertical restriction — hands may appear below the face).
+                if not self._wave_detected.get(track_id, False):
+                    face_cx = (x1 + x2) / 2.0
+                    for hand_idx, hand in enumerate(hands):
+                        hand_cx = hand.points[:, 0].mean() * w
+                        dist = abs(hand_cx - face_cx)
+                        threshold = w * 0.5
+                        print(f"[ENGAGE] track={track_id} hand={hand_idx} hand_cx={hand_cx:.0f} face_cx={face_cx:.0f} dist={dist:.0f} thresh={threshold:.0f}")
+                        if dist < threshold:
+                            self._wave_detected[track_id] = True
+                            print(f"[ENGAGE] track={track_id} HAND DETECTED NEAR FACE!")
+                            break
             else:
                 # Not looking - reset all engagement state for this track
                 self._looking_since[track_id] = None
                 self._wave_detected[track_id] = False
                 self._engagement_confirmed[track_id] = False
-
-            # Check for hand raised near face (high CCTV camera: wide zone,
-            # no vertical restriction — hands may appear below the face).
-            if not self._wave_detected.get(track_id, False):
-                face_cx = (x1 + x2) / 2.0
-                for hand in hands:
-                    hand_cx = hand.points[:, 0].mean() * w
-                    if abs(hand_cx - face_cx) < w * 0.5:
-                        self._wave_detected[track_id] = True
-                        break
+                print(f"[ENGAGE] track={track_id} NOT LOOKING - cleared state")
 
             # Check if both conditions met (required_seconds looking + wave)
             looking_since = self._looking_since.get(track_id)
@@ -304,13 +314,15 @@ class RecognitionLoop:
                 and now - looking_since >= required_seconds
             ):
                 self._engagement_confirmed[track_id] = True
+                print(f"[ENGAGE] track={track_id} ENGAGED CONFIRMED!")
 
-        # Clean up state for track_ids that disappeared from the frame
+        # Cleanup stale tracks
         for track_id in list(self._looking_since.keys()):
             if track_id not in current_track_ids:
                 self._looking_since.pop(track_id, None)
                 self._wave_detected.pop(track_id, None)
                 self._engagement_confirmed.pop(track_id, None)
+                print(f"[ENGAGE] track={track_id} STALE - cleaned up")
 
     def _is_engaged(self, frame: np.ndarray, ev: FaceEvent) -> bool:
         """Check if employee is engaged (looking at camera for 2s + waved)."""

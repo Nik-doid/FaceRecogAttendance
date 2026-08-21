@@ -58,8 +58,8 @@ class Settings(BaseSettings):
 
     # --- Engagement (CCTV-optimized) -----------------------------------------
     # Minimum face width as a fraction of frame width.
-    # High-mounted CCTV captures small faces (3-8% of frame width). Default 3%.
-    engagement_min_face_ratio: float = 0.03
+    # High-mounted CCTV captures very small faces (1.5-5% of frame width). Default 1.5%.
+    engagement_min_face_ratio: float = 0.015
     # Required continuous engagement time in seconds (looking + hand visible).
     # Wall-clock time, independent of frame_skip. Default 1.0 second.
     engagement_required_seconds: float = 1.0
