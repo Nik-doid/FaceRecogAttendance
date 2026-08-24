@@ -69,20 +69,37 @@ class FaceIndex:
 
     # -- reads ---------------------------------------------------------------
     def search(self, embedding: np.ndarray, k: int = 1) -> list[IndexResult]:
+        """Search for top-k *unique employees* by cosine similarity.
+
+        Since each employee may have multiple reference embeddings, we search for
+        a larger candidate pool, group by employee_code, keep the best score per
+        employee, then return the top-k employees.
+        """
         vec = l2_normalize(embedding).astype("float32").reshape(1, -1)
         with self._lock:
             if self._index.ntotal == 0:
                 return []
-            k = min(k, self._index.ntotal)
-            scores, idxs = self._index.search(vec, k)
-        results: list[IndexResult] = []
+            # Search for enough candidates to cover all employees (max 10 per employee)
+            max_candidates = min(self._index.ntotal, k * 10)
+            scores, idxs = self._index.search(vec, max_candidates)
+
+        # Group by employee_code, keep best score
+        best_per_employee: dict[str, float] = {}
         for score, idx in zip(scores[0], idxs[0], strict=False):
             if idx < 0 or idx >= len(self._codes):
                 continue
+            code = self._codes[int(idx)]
             score = float(score)
+            if code not in best_per_employee or score > best_per_employee[code]:
+                best_per_employee[code] = score
+
+        # Sort by score descending and return top-k
+        sorted_results = sorted(best_per_employee.items(), key=lambda x: x[1], reverse=True)
+        results: list[IndexResult] = []
+        for code, score in sorted_results[:k]:
             results.append(
                 IndexResult(
-                    employee_code=self._codes[int(idx)],
+                    employee_code=code,
                     score=score,
                     distance=float(1.0 - score),
                 )

@@ -89,7 +89,7 @@ class Container:
     # -- construction helpers -----------------------------------------------------
     def _build_index_service(self) -> IndexService:
         assert self.ai is not None
-        return IndexService(
+        svc = IndexService(
             settings=self.settings,
             face_index=self.face_index,
             detector=self.ai.detector,
@@ -97,6 +97,13 @@ class Container:
             quality=self.ai.quality,
             repo=self.face_embedding_repo,
         )
+        # Startup log: FAISS index status
+        self._log.info(
+            "FAISS index loaded: size=%d employees=%s",
+            self.face_index.size,
+            sorted(self.face_index.employee_codes),
+        )
+        return svc
 
     def _build_loop(self) -> RecognitionLoop:
         assert self.ai is not None

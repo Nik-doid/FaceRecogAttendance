@@ -47,6 +47,7 @@ class Settings(BaseSettings):
 
     # --- Recognition ---------------------------------------------------------
     recognition_threshold: float = 0.60
+    detect_thresh: float = 0.40
     duplicate_timeout_seconds: int = 300
     minimum_face_size: int = 80
     liveness_enabled: bool = True

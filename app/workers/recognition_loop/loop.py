@@ -277,14 +277,25 @@ class RecognitionLoop:
             looking = face_w / w >= min_face_ratio
 
             # DEBUG
-            print(f"[ENGAGE] track={track_id} face_w={face_w} frame_w={w} ratio={face_w/w:.3f} min={min_face_ratio} looking={looking}")
+            ratio = face_w / w
+            print(
+                f"[ENGAGE] track={track_id} face_w={face_w} "
+                f"frame_w={w} ratio={ratio:.3f} min={min_face_ratio} looking={looking}"
+            )
 
             if looking:
                 # Start or continue the looking timer
                 if self._looking_since.get(track_id) is None:
                     self._looking_since[track_id] = now
-                elapsed = now - self._looking_since[track_id]
-                print(f"[ENGAGE] track={track_id} looking since={self._looking_since[track_id]:.1f} elapsed={elapsed:.2f}s required={required_seconds}s wave={self._wave_detected.get(track_id, False)}")
+                looking_since = self._looking_since[track_id]
+                assert looking_since is not None
+                elapsed = now - looking_since
+                wave = self._wave_detected.get(track_id, False)
+                print(
+                    f"[ENGAGE] track={track_id} looking "
+                    f"since={looking_since:.1f} "
+                    f"elapsed={elapsed:.2f}s required={required_seconds}s wave={wave}"
+                )
 
                 # Check for hand raised near face (high CCTV camera: wide zone,
                 # no vertical restriction — hands may appear below the face).
@@ -294,7 +305,11 @@ class RecognitionLoop:
                         hand_cx = hand.points[:, 0].mean() * w
                         dist = abs(hand_cx - face_cx)
                         threshold = w * 0.5
-                        print(f"[ENGAGE] track={track_id} hand={hand_idx} hand_cx={hand_cx:.0f} face_cx={face_cx:.0f} dist={dist:.0f} thresh={threshold:.0f}")
+                        print(
+                            f"[ENGAGE] track={track_id} hand={hand_idx} "
+                            f"hand_cx={hand_cx:.0f} face_cx={face_cx:.0f} "
+                            f"dist={dist:.0f} thresh={threshold:.0f}"
+                        )
                         if dist < threshold:
                             self._wave_detected[track_id] = True
                             print(f"[ENGAGE] track={track_id} HAND DETECTED NEAR FACE!")

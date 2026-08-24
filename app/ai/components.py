@@ -42,6 +42,7 @@ def load_ai_components(settings: Settings) -> AIComponents:
         model_name=settings.detect_model,
         providers=providers,
         models_dir=models_dir,
+        det_thresh=settings.detect_thresh,
     )
     recognizer = ArcFaceRecognizer(
         model_name=settings.recognize_model,

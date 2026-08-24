@@ -7,6 +7,7 @@ persistence belong to the loop, keeping this class trivially testable.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -16,6 +17,8 @@ from app.ai.components import AIComponents
 from app.ai.faiss.index import FaceIndex
 from app.ai.types import DetectedFace
 from app.core.metrics import FACES_DETECTED, QUALITY_REJECTED
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -73,12 +76,21 @@ class RecognitionPipeline:
         else:
             faces = tracking
 
+        logger.debug(
+            "Pipeline: %d face(s) detected", len(faces)
+        )
+
         events: list[FaceEvent] = []
         for track_id, face in faces:
+            # Stage 1: Quality gate
             quality = self._ai.quality.assess(
                 frame_bgr, face, face_count=len(faces)
             )
             if not quality.passed:
+                logger.info(
+                    "Quality REJECTED track=%s reasons=%s",
+                    track_id, quality.reasons
+                )
                 for reason in quality.reasons:
                     QUALITY_REJECTED.labels(reason=reason).inc()
                 events.append(
@@ -96,9 +108,19 @@ class RecognitionPipeline:
                     )
                 )
                 continue
+            else:
+                logger.debug(
+                    "Quality PASSED track=%s",
+                    track_id
+                )
 
+            # Stage 2: Liveness
             live, liveness_score = self._ai.liveness.is_live(frame_bgr, face)
             if not live:
+                logger.info(
+                    "Liveness REJECTED track=%s score=%.3f",
+                    track_id, liveness_score
+                )
                 events.append(
                     FaceEvent(
                         face=face,
@@ -114,8 +136,17 @@ class RecognitionPipeline:
                     )
                 )
                 continue
+            else:
+                logger.debug(
+                    "Liveness PASSED track=%s score=%.3f",
+                    track_id, liveness_score
+                )
 
             if face.kps is None:
+                logger.warning(
+                    "No keypoints for track=%s, skipping embed/match",
+                    track_id
+                )
                 events.append(
                     FaceEvent(
                         face=face,
@@ -132,11 +163,18 @@ class RecognitionPipeline:
                 )
                 continue
 
+            # Stage 3: Embedding + Match
             embedding = self._ai.recognizer.embed(frame_bgr, face.kps)
             matches = self._index.search(embedding, k=1)
             best = matches[0] if matches else None
 
             if best is None or best.score < self.recognition_threshold:
+                best_score = best.score if best else 0.0
+                best_code = best.employee_code if best else "none"
+                logger.info(
+                    "Match BELOW THRESHOLD track=%s best_code=%s score=%.4f threshold=%.2f",
+                    track_id, best_code, best_score, self.recognition_threshold
+                )
                 events.append(
                     FaceEvent(
                         face=face,
@@ -144,7 +182,7 @@ class RecognitionPipeline:
                         embedding=embedding,
                         employee_code=None,
                         confidence=0.0,
-                        best_score=best.score if best else 0.0,
+                        best_score=best_score,
                         quality_passed=True,
                         quality_reasons=[],
                         live=True,
@@ -153,6 +191,10 @@ class RecognitionPipeline:
                 )
                 continue
 
+            logger.info(
+                "Match PASSED track=%s employee=%s score=%.4f",
+                track_id, best.employee_code, best.score
+            )
             events.append(
                 FaceEvent(
                     face=face,
