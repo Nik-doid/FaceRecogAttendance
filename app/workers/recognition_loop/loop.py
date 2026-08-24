@@ -390,7 +390,7 @@ class RecognitionLoop:
         """Save at most one attendance snapshot per employee per day.
 
         If a snapshot already exists for this employee today, its path is reused instead
-        of writing another file — the C# software never produces multiple attendance
+        of writing another file — the external system never produces multiple attendance
         snapshots per person per day, and snapshots are only kept when the punch is
         actually written to the ERP DB.
         """

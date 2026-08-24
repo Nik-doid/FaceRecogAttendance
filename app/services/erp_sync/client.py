@@ -45,7 +45,7 @@ class ErpDbConfig:
     database: str = "attendance"
     user: str = "root"
     password: str = ""
-    # Employee code -> attendance id lookup (mirrors ct_hr_employee_master in C#).
+    # Employee code -> attendance id lookup (mirrors ct_hr_employee_master table).
     employee_table: str = "ct_hr_employee_master"
     employee_code_column: str = "emp_code"
     employee_id_column: str = "emp_id"
@@ -131,8 +131,8 @@ class ErpMysqlClient:
     def lookup_employee_id(self, employee_code: str) -> str | None:
         """Resolve an employee code to its ERP attendance id (numeric enroll number).
 
-        Mirrors the C# lookup chain: ``ct_hr_employee_master.emp_code`` ->
-        ``emp_id``, written as the ``attendance_id_no`` in the log.
+        Lookup chain: ``ct_hr_employee_master.emp_code`` -> ``emp_id``,
+        written as the ``attendance_id_no`` in the log.
         """
         conn = None
         try:
@@ -164,8 +164,8 @@ class ErpMysqlClient:
     def existing_in_out_modes(self, attendance_id_no: str, log_date_only: str) -> set[int]:
         """In/out modes already present in the ERP log for an employee on a day.
 
-        Used to seed the in/out dedup rule so a punch already recorded by the C#
-        software is never written twice.
+        Used to seed the in/out dedup rule so a punch already recorded is never
+        written twice.
         """
         conn = None
         try:

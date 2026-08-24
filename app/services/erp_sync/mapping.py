@@ -2,7 +2,7 @@
 
 The ERP ``ct_hr_employee_attendance_log`` table is keyed by the physical attendance
 device the punch came from. Our camera therefore needs to map to that device plus a
-branch, mirroring how the C# software passes ``device_id`` (machine number) and
+branch, mirroring how the external software passes ``device_id`` (machine number) and
 ``branch_id`` into its insert.
 """
 
@@ -86,5 +86,5 @@ class CameraMapping:
 
 
 def format_datetime(dt: datetime) -> str:
-    """Format a datetime to ``yyyy-MM-dd HH:mm:ss`` (matches the C# insert)."""
+    """Format a datetime to ``yyyy-MM-dd HH:mm:ss`` (matches the external insert)."""
     return dt.strftime("%Y-%m-%d %H:%M:%S")

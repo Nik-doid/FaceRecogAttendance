@@ -234,20 +234,19 @@ Duplicate suppression: the same employee is only reported once per
 `DUPLICATE_TIMEOUT_SECONDS` window (default 300s). Suppressed and failed
 deliveries are recorded in `recognition_logs` with the response detail.
 
-## Attendance log sync to the existing ERP DB
+## Attendance log sync to an external ERP/DB
 
-The C# attendance software writes punches into `ct_hr_employee_attendance_log`
-(`AttendanceLog.cs`). This service can write the same table directly, so the
-face-recognition events become a drop-in source of attendance rows without any
-change to the existing system.
+This service can write attendance punches directly to an external MySQL database
+(e.g., an existing HR/attendance system), making face-recognition events a
+drop-in source of attendance rows.
 
-The sync is **disabled by default**. Enable it and point it at the ERP MySQL:
+The sync is **disabled by default**. Enable it and point it at the target MySQL:
 
 | Setting                  | Default                | Meaning                                      |
 |--------------------------|------------------------|----------------------------------------------|
 | `ERP_SYNC_ENABLED`       | `false`                | Run the background sync + allow `/sync` API  |
-| `ERP_DB_HOST` / `_PORT`  | `localhost` / `3306`   | ERP MySQL connection                         |
-| `ERP_DB_NAME` / `_USER` / `_PASSWORD` | `attendance` / `root` | ERP credentials                    |
+| `ERP_DB_HOST` / `_PORT`  | `localhost` / `3306`   | Target MySQL connection                      |
+| `ERP_DB_NAME` / `_USER` / `_PASSWORD` | `attendance` / `root` | Target DB credentials              |
 | `ERP_CAMERA_MAPPING`     | `{}`                   | JSON `camera_id -> {device_id, branch_id}`   |
 | `ERP_VERIFY_MODE`        | `FACE`                 | `verify_mode` column value                   |
 | `ERP_CREATED_BY`         | `system`               | `created_by` column value                    |
@@ -269,31 +268,26 @@ ERP_CAMERA_MAPPING='{"cam-01":{"device_id":1,"branch_id":1},"cam-02":{"device_id
 ERP_EMPLOYEE_ACTIVE_FILTER="_status='employed' AND is_deleted_flag='n'"
 ```
 
-Behavior mirrors the C# INSERT (`attendance_id_no`, `in_out_mode`, `verify_mode`,
-`log_date_time`, `device_id`, `branch_id`, `created_by`, `created_date`,
-`log_date_only`):
+Behavior (writes to `ct_hr_employee_attendance_log` with columns:
+`attendance_id_no`, `in_out_mode`, `verify_mode`, `log_date_time`, `device_id`,
+`branch_id`, `created_by`, `created_date`, `log_date_only`):
 
 - Only events with an `employee_code` that were successfully reported are
   candidates.
 - Each camera maps to the physical attendance `device_id`/`branch_id` its
   punches belong to; events from unmapped cameras are skipped (with the snapshot
   discarded) and recorded with an `erp_skip_reason`.
-- The employee code is resolved to the ERP attendance id the same way the C#
-  report does — `ERP_EMPLOYEE_TABLE.emp_code -> emp_id` — and
-  that id is written as `attendance_id_no`. Events for codes with no
-  mapping are skipped and the snapshot is discarded.
+- The employee code is resolved to the ERP attendance id —
+  `ERP_EMPLOYEE_TABLE.emp_code -> emp_id` — and that id is written as
+  `attendance_id_no`. Events for codes with no mapping are skipped.
 - With `ERP_IN_OUT_MODE=toggle`, the first punch of a day is check-in (1) and
-  the second is check-out (2); any further punches that day are skipped — a day
-  never gets a second check-in or second check-out. The rule is seeded from the
-  rows already in `ct_hr_employee_attendance_log` for that employee+day, so a
-  punch the C# software already recorded is never written twice.
+  the second is check-out (2); any further punches that day are skipped. The
+  rule is seeded from rows already in `ct_hr_employee_attendance_log` for that
+  employee+day, so existing punches are never written twice.
 - Successful rows are stamped `erp_synced_at` in `recognition_logs`, making the
-  sync idempotent (never duplicates a punch, and the ERP insert's
-  `ON DUPLICATE KEY` upsert is mirrored).
-- Attendance snapshots follow the C# behaviour: at most **one** snapshot per
-  employee per day is saved (later appearances reuse it), and a snapshot is only
-  kept if its punch is actually written to the ERP DB — skipped events have their
-  snapshot file deleted.
+  sync idempotent (never duplicates a punch; `ON DUPLICATE KEY` upsert is used).
+- At most **one** snapshot per employee per day is saved (later appearances
+  reuse it), and a snapshot is only kept if its punch is actually written.
 - The scheduler runs on a daemon thread; runs can also be triggered on demand
   via `POST /api/v1/sync/attendance-log` (admin + rate-limited, audited).
 
@@ -372,5 +366,5 @@ The service manages its own schema (migrations `alembic/versions/0001_initial.py
 `0002_erp_sync.py`, and `0003_erp_skip_reason.py`):
 `face_embeddings`, `recognition_logs`, `unknown_faces`, `cameras`, `settings`
 (runtime overrides for threshold/timeout/etc., editable without redeploy), and
-`audit_logs`. The existing attendance system's tables are never touched — the
-ERP sync only ever writes `ct_hr_employee_attendance_log`.
+`audit_logs`. The service's own tables are never touched by the ERP sync — it
+only ever writes to the external target table.

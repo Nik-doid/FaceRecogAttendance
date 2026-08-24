@@ -1,7 +1,7 @@
 """ERP attendance-log sync endpoints.
 
 Triggers a run of the service that writes recognised attendance events into the
-existing C# attendance system's ``ct_hr_employee_attendance_log`` table, and reports
+external attendance system's ``ct_hr_employee_attendance_log`` table, and reports
 sync status/pending backlog.
 """
 

@@ -1,9 +1,9 @@
 """ERP attendance-log sync: data model and result types.
 
-The sync mirrors exactly what the C# attendance software inserts into
-``ct_hr_employee_attendance_log`` (see ``AttendanceLog.cs`` tab InOutMode/VerifyMode
-handling and its INSERT statement), so the face-recognition service becomes a drop-in
-data source for the same table.
+The sync mirrors what the external attendance software inserts into
+``ct_hr_employee_attendance_log`` (InOutMode/VerifyMode handling and INSERT
+statement), so the face-recognition service becomes a drop-in data source
+for the same table.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class ErpAttendanceRow:
-    """One row to write to ct_hr_employee_attendance_log, mirroring the C# insert."""
+    """One row to write to ct_hr_employee_attendance_log."""
 
     attendance_id_no: str
     in_out_mode: int

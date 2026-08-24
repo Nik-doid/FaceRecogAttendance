@@ -94,10 +94,10 @@ class Settings(BaseSettings):
     attendance_queue: str = "attendance.checkin"
     attendance_publish_retries: int = 3
 
-    # --- Attendance log sync to the existing ERP DB (cron) -----------------------
-    # Replicates the INSERT the C# attendance software performs into
-    # ct_hr_employee_attendance_log. Disabled unless erp_sync_enabled is true; the
-    # sync runs on a background interval scheduler and/or on demand via the /sync API.
+# --- Attendance log sync to an external ERP/DB (cron) -----------------------
+    # Writes attendance punches to an external MySQL table (ct_hr_employee_attendance_log).
+    # Disabled unless erp_sync_enabled is true; runs on a background interval
+    # scheduler and/or on demand via the /sync API.
     erp_sync_enabled: bool = False
     erp_db_host: str = "localhost"
     erp_db_port: int = 3306
@@ -106,24 +106,24 @@ class Settings(BaseSettings):
     erp_db_password: str = ""
     # JSON map of camera_id -> {"device_id": <int>, "branch_id": <int>}.
     erp_camera_mapping: dict[str, dict[str, int]] = {}
-    # verify_mode string column value (C# maps 0/1->FINGERPRINT, 2->PIN, 3->PASSWORD).
+    # verify_mode string column value.
     erp_verify_mode: str = "FACE"
     erp_created_by: str = "system"
     # in_out_mode: a literal int (e.g. "1" = always check-in), or "toggle" for the
     # proper per-employee-per-day rule: first punch = check-in(1), second = check-out(2),
     # any further punches that day are skipped (no duplicate check-ins/outs). The rule
-    # is seeded from rows already present in ct_hr_employee_attendance_log for that day.
+    # is seeded from rows already present in the target attendance table for that day.
     erp_in_out_mode: str = "toggle"
     erp_sync_interval_seconds: int = 300
     erp_sync_batch_size: int = 500
-    # Employee code -> ERP attendance id lookup. The C# report selects
-    # ct_hr_employee_master.emp_id / attendance_thumb_id_no and uses the id as the
+    # Employee code -> ERP attendance id lookup.
+    # The external system's employee table (emp_code -> emp_id) provides the
     # attendance_id_no written to the log; table + columns are configurable here.
     erp_employee_table: str = "ct_hr_employee_master"
     erp_employee_code_column: str = "emp_code"
     erp_employee_id_column: str = "emp_id"
-    # Optional extra WHERE clause applied to the employee lookup (the C# software
-    # filters on `_status`, e.g. `_status='employed'`).
+    # Optional extra WHERE clause applied to the employee lookup
+    # (e.g. `_status='employed'`).
     erp_employee_active_filter: str = "_status"
 
     # --- This service's own database -----------------------------------------

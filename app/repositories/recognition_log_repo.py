@@ -117,8 +117,8 @@ class RecognitionLogRepository(BaseRepository[RecognitionLog]):
         """The most recent attendance snapshot saved for an employee on a day.
 
         The recognition loop reuses this instead of writing a second snapshot, so an
-        employee has at most one attendance snapshot per day — mirroring how the C#
-        software never captures more than one enrolment snapshot per punch.
+        employee has at most one attendance snapshot per day — mirroring how the
+        external system never captures more than one enrolment snapshot per punch.
         """
         stmt = (
             select(RecognitionLog)
