@@ -21,4 +21,4 @@ models
 uvicorn.out.log
 uvicorn.err.log
 FILE_ROLE_MAP.txt
-litellm_config.yaml
+litellm_config.yamlmodels/
