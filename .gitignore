@@ -14,14 +14,6 @@ htmlcov/
 # Env
 .env
 
-# Runtime storage
-storage/
-snapshots/
-
-# Models downloaded at runtime
-models/
-!models/.gitkeep
-
 # IDE
 .idea/
 .vscode/
