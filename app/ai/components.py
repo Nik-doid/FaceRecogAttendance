@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.ai._download import ensure_models
 from app.ai.detector.base import Detector
 from app.ai.detector.hand import HandDetector
 from app.ai.detector.scrfd import SCRFDDetector
@@ -35,6 +36,7 @@ class AIComponents:
 
 def load_ai_components(settings: Settings) -> AIComponents:
     """Instantiate every AI model against the configured providers."""
+    ensure_models(settings)
     providers = settings.onnx_providers
     models_dir = str(settings.models_dir)
 

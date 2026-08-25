@@ -34,10 +34,15 @@ services:
       - "5672:5672"
       - "15672:15672"
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 5s
+      # rabbitmq-diagnostics boots a full Erlang VM per probe (~15s on a modest
+      # host), so a 5s timeout never passes -- and probes fired every 5s overlap
+      # and starve the broker while it boots. A TCP probe of the AMQP port is
+      # what `app` actually depends on, and costs ~50ms.
+      test: ["CMD-SHELL", "nc -z localhost 5672 || exit 1"]
+      interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 12
+      start_period: 60s
 
   app:
     build: .
@@ -53,6 +58,9 @@ services:
       MODELS_DIR: /data/models
     volumes:
       - ${EMPLOYEE_PHOTOS_SOURCE:-./uploads/employees}:/data/uploads:ro
+      # Writable, and deliberately not inside the appdata volume: the ~275 MB
+      # model pack is then downloaded once and survives `docker compose down -v`.
+      - ./models:/data/models
       - appdata:/data
     depends_on:
       postgres:

@@ -1,0 +1,86 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Webcam WebSocket</title>
+<style>
+  body { background: #111; color: #eee; font: 14px system-ui, sans-serif; margin: 0; padding: 24px; }
+  h1 { font-size: 16px; font-weight: 600; margin: 0 0 12px; }
+  #out { width: 640px; max-width: 100%; display: block; background: #000; border-radius: 4px; }
+  #video { display: none; }
+  #status { margin-top: 8px; color: #999; }
+  b { color: #4ade80; font-variant-numeric: tabular-nums; }
+  #palm { padding: 1px 8px; border-radius: 10px; background: #333; color: #999; }
+  #palm.on { background: #4ade80; color: #052e16; font-weight: 600; }
+</style>
+
+<h1>Webcam &rarr; WebSocket &rarr; back</h1>
+<video id="video" autoplay muted playsinline></video>
+<!-- src is replaced per frame by the socket; the transparent GIF avoids a broken-image box -->
+<img id="out" alt="round-tripped webcam frames"
+     src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+<div id="status">
+  <b id="fps">0</b> fps &middot; <span id="state">connecting&hellip;</span> &middot;
+  <span id="palm">no palm</span>
+</div>
+
+<script>
+const video = document.getElementById("video");
+const out = document.getElementById("out");
+const fpsEl = document.getElementById("fps");
+const stateEl = document.getElementById("state");
+const palmEl = document.getElementById("palm");
+
+const SEND_INTERVAL_MS = 66;   // ~15 fps
+const JPEG_QUALITY = 0.7;
+
+const canvas = document.createElement("canvas");
+const ctx = canvas.getContext("2d");
+let received = 0;
+
+const proto = location.protocol === "https:" ? "wss:" : "ws:";
+const ws = new WebSocket(`${proto}//${location.host}/api/v1/webcam/ws`);
+ws.binaryType = "blob";
+
+ws.onmessage = (ev) => {
+  // Text frames are palm-detection events; binary frames are video.
+  if (typeof ev.data === "string") {
+    const msg = JSON.parse(ev.data);
+    palmEl.textContent = msg.palm ? `palm detected (${msg.score})` : "no palm";
+    palmEl.classList.toggle("on", msg.palm);
+    return;
+  }
+  const previous = out.src;
+  out.src = URL.createObjectURL(ev.data);
+  if (previous.startsWith("blob:")) URL.revokeObjectURL(previous);
+  received++;
+};
+ws.onclose = () => { stateEl.textContent = "disconnected"; };
+ws.onerror = () => { stateEl.textContent = "socket error"; };
+
+ws.onopen = async () => {
+  stateEl.textContent = "waiting for camera";
+  try {
+    video.srcObject = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480 },
+    });
+    await video.play();
+  } catch (err) {
+    stateEl.textContent = `camera unavailable: ${err.name} ` +
+      "(getUserMedia needs http://localhost or https)";
+    return;
+  }
+  canvas.width = video.videoWidth || 640;
+  canvas.height = video.videoHeight || 480;
+  stateEl.textContent = "streaming";
+
+  setInterval(() => {
+    // Skip the tick if the socket is closed or still draining — no unbounded queue.
+    if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > 0) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob((blob) => {
+      if (blob && ws.readyState === WebSocket.OPEN) ws.send(blob);
+    }, "image/jpeg", JPEG_QUALITY);
+  }, SEND_INTERVAL_MS);
+};
+
+setInterval(() => { fpsEl.textContent = received; received = 0; }, 1000);
+</script>

@@ -73,8 +73,18 @@ The workflow is: **enroll photos → boot → build index → start camera → w
    uv sync --extra ai
    ```
 
-   `onnxruntime` + `insightface` install and the SCRFD/ArcFace models
-   auto-download into `./models` on first run.
+   `onnxruntime` + `insightface` install, and the SCRFD/ArcFace models
+   (`det_10g.onnx`, `w600k_r50.onnx`) plus MediaPipe's `hand_landmarker.task`
+   auto-download into `./models` on first run -- about 275 MB, fetched once. To
+   pull them ahead of time instead of on first boot:
+
+   ```bash
+   uv run python -m app.ai._download
+   ```
+
+   The optional SilentFace liveness model is *not* downloaded (no canonical public
+   export); supply your own via `SILENTFACE_MODEL_PATH`, or leave
+   `LIVENESS_ENABLED=false`.
 
 2. **Start a Postgres** for the service's own tables (it uses Postgres via
    asyncpg/psycopg; RabbitMQ is optional — use `ATTENDANCE_BROKER=null`):
@@ -302,8 +312,9 @@ Full reference in [`.env.example`](.env.example). Key groups:
   `MINIMUM_FACE_SIZE`, `LIVENESS_ENABLED`, `SILENTFACE_THRESHOLD`,
   `TRACKING_ENABLED`
 - **AI models**: `MODELS_DIR`, `DETECT_MODEL`, `RECOGNIZE_MODEL`,
-  `SILENTFACE_MODEL_PATH`, `ONNX_PROVIDERS` (insightface auto-downloads into
-  `MODELS_DIR` on first use)
+  `SILENTFACE_MODEL_PATH`, `ONNX_PROVIDERS`, `MODELS_AUTO_DOWNLOAD` (missing
+  detector/recognizer/hand models are downloaded into `MODELS_DIR` on first use;
+  set `MODELS_AUTO_DOWNLOAD=false` on air-gapped hosts)
 - **Photos**: `EMPLOYEE_PHOTOS_SOURCE` (comma-separated roots)
 - **Attendance**: `ATTENDANCE_BROKER`, `ATTENDANCE_MQ_URL`, `ATTENDANCE_EXCHANGE`,
   `ATTENDANCE_ROUTING_KEY`, `ATTENDANCE_QUEUE`

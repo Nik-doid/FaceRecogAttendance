@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     detect_model: str = "det_10g.onnx"
     recognize_model: str = "w600k_r50.onnx"
     silentface_model_path: Path | None = None
+    # Fetch missing SCRFD/ArcFace/hand-landmarker files into models_dir on first
+    # boot. Turn off for air-gapped hosts or images that bake the models in.
+    models_auto_download: bool = True
     onnx_providers: Annotated[list[str], NoDecode] = [
         "CUDAExecutionProvider",
         "CPUExecutionProvider",

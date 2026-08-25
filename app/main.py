@@ -16,8 +16,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 
 from app import __version__
 from app.api.deps import set_container
@@ -28,6 +30,8 @@ from app.core.logging import get_logger, setup_logging
 from app.database.session import close_engines, sync_session
 
 log = get_logger(__name__)
+
+FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
 
 
 def _seed_own_database(container: Container) -> None:
@@ -79,6 +83,12 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.include_router(api_router, prefix="/api/v1")
+
+    @app.get("/", include_in_schema=False)
+    async def index() -> FileResponse:
+        """The debug webcam page (talks to /api/v1/webcam/ws)."""
+        return FileResponse(FRONTEND_DIR / "index.html")
+
     return app
 
 
