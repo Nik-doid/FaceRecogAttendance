@@ -13,7 +13,6 @@ htmlcov/
 
 # Env
 .env
-models
 
 # IDE
 .idea/
@@ -21,5 +20,5 @@ models
 uvicorn.out.log
 uvicorn.err.log
 FILE_ROLE_MAP.txt
-litellm_config.yamlmodels/
+litellm_config.yamlmodels
 models/
