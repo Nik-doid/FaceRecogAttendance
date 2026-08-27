@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     app_name: str = "face-recognition-service"
     app_env: Literal["development", "staging", "production"] = "production"
     log_level: str = "INFO"
+    # Silence the onnxruntime and core-OpenCV native loggers, which write to stderr
+    # and ignore LOG_LEVEL entirely. Turn off to diagnose ONNX problems. OpenCV's
+    # RTSP/FFmpeg chatter is NOT covered -- that needs OPENCV_LOG_LEVEL exported
+    # before the process starts; see app/core/logging.py.
+    quiet_native_logs: bool = True
 
     # --- Camera --------------------------------------------------------------
     camera_id: str = "cam-01"
@@ -44,6 +49,34 @@ class Settings(BaseSettings):
     camera_autostart: bool = False
     frame_skip: int = 2
     max_frame_width: int = 1280
+    # Run the webcam pipeline on every Nth frame of the /camera/ws stream. Detection
+    # runs concurrently with streaming, so this caps CPU, not the frame rate. At ~30fps
+    # 10 is a scan every ~330ms, which leaves a real gap either side of a
+    # PALM_SCAN_GRID=2 scan instead of pegging a core continuously.
+    camera_detect_every: int = 10
+
+    # --- Palm detection (the /webcam/ws and /camera/ws pipeline) --------------
+    palm_score_threshold: float = 0.50
+    # NxN overlapping crops scanned per frame on the *camera* path, where the subject
+    # is far enough that a palm does not survive BlazePalm's 192x192 input. The browser
+    # webcam keeps the whole-frame scan: a palm held up to a laptop is already large.
+    # Costs up to N*N+1 forward passes, and one cv2.dnn pass measured ~72ms on a 4-core
+    # CPU: grid 2 is ~280ms/scan, grid 3 ~720ms. Raise CAMERA_DETECT_EVERY alongside it.
+    palm_scan_grid: int = 2
+    palm_scan_overlap: float = 0.20
+
+    # --- Looking gate --------------------------------------------------------
+    # Nothing past face detection runs unless a face is turned toward the camera.
+    # Yaw is the nose's offset along the eye axis over the eye span: measured 0.03 or
+    # less on frontal enrolment photos and 0.76 on a turned head, so 0.35 sits well
+    # clear of both. Raise it to accept more angled faces. Pitch is not gated -- a
+    # high-mounted camera sees every face pitched. See app/core/face_processing/gaze.py.
+    looking_max_yaw_ratio: float = 0.35
+    looking_max_roll_degrees: float = 25.0
+    # How far around a looking face to hunt for a raised hand, in multiples of that
+    # face's width (sideways) and height (below). Widen it if people wave far out to
+    # the side; narrowing it makes the palm gate stricter.
+    palm_search_margin: float = 0.6
 
     # --- Recognition ---------------------------------------------------------
     recognition_threshold: float = 0.60

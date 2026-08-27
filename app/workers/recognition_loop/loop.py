@@ -274,13 +274,16 @@ class RecognitionLoop:
             face_w = x2 - x1
 
             # Check if looking at camera (face large enough, no center requirement)
-            looking = face_w / w >= min_face_ratio
-
-            # DEBUG
             ratio = face_w / w
-            print(
-                f"[ENGAGE] track={track_id} face_w={face_w} "
-                f"frame_w={w} ratio={ratio:.3f} min={min_face_ratio} looking={looking}"
+            looking = ratio >= min_face_ratio
+            self._log.debug(
+                "engagement: face size gate",
+                extra={
+                    "track_id": track_id,
+                    "face_ratio": round(ratio, 3),
+                    "min_ratio": min_face_ratio,
+                    "looking": looking,
+                },
             )
 
             if looking:
@@ -291,10 +294,14 @@ class RecognitionLoop:
                 assert looking_since is not None
                 elapsed = now - looking_since
                 wave = self._wave_detected.get(track_id, False)
-                print(
-                    f"[ENGAGE] track={track_id} looking "
-                    f"since={looking_since:.1f} "
-                    f"elapsed={elapsed:.2f}s required={required_seconds}s wave={wave}"
+                self._log.debug(
+                    "engagement: looking timer",
+                    extra={
+                        "track_id": track_id,
+                        "elapsed": round(elapsed, 2),
+                        "required": required_seconds,
+                        "wave": wave,
+                    },
                 )
 
                 # Check for hand raised near face (high CCTV camera: wide zone,
@@ -305,21 +312,27 @@ class RecognitionLoop:
                         hand_cx = hand.points[:, 0].mean() * w
                         dist = abs(hand_cx - face_cx)
                         threshold = w * 0.5
-                        print(
-                            f"[ENGAGE] track={track_id} hand={hand_idx} "
-                            f"hand_cx={hand_cx:.0f} face_cx={face_cx:.0f} "
-                            f"dist={dist:.0f} thresh={threshold:.0f}"
+                        self._log.debug(
+                            "engagement: hand distance",
+                            extra={
+                                "track_id": track_id,
+                                "hand": hand_idx,
+                                "distance": round(dist),
+                                "threshold": round(threshold),
+                            },
                         )
                         if dist < threshold:
                             self._wave_detected[track_id] = True
-                            print(f"[ENGAGE] track={track_id} HAND DETECTED NEAR FACE!")
+                            self._log.debug(
+                                "engagement: hand near face", extra={"track_id": track_id}
+                            )
                             break
             else:
                 # Not looking - reset all engagement state for this track
                 self._looking_since[track_id] = None
                 self._wave_detected[track_id] = False
                 self._engagement_confirmed[track_id] = False
-                print(f"[ENGAGE] track={track_id} NOT LOOKING - cleared state")
+                self._log.debug("engagement: cleared", extra={"track_id": track_id})
 
             # Check if both conditions met (required_seconds looking + wave)
             looking_since = self._looking_since.get(track_id)
@@ -329,7 +342,12 @@ class RecognitionLoop:
                 and now - looking_since >= required_seconds
             ):
                 self._engagement_confirmed[track_id] = True
-                print(f"[ENGAGE] track={track_id} ENGAGED CONFIRMED!")
+                # The one transition worth seeing at INFO: it is what lets attendance
+                # be reported, and it happens once per person, not once per frame.
+                self._log.info(
+                    "engagement confirmed",
+                    extra={"event": "engagement_confirmed", "track_id": track_id},
+                )
 
         # Cleanup stale tracks
         for track_id in list(self._looking_since.keys()):
@@ -337,7 +355,7 @@ class RecognitionLoop:
                 self._looking_since.pop(track_id, None)
                 self._wave_detected.pop(track_id, None)
                 self._engagement_confirmed.pop(track_id, None)
-                print(f"[ENGAGE] track={track_id} STALE - cleaned up")
+                self._log.debug("engagement: stale track dropped", extra={"track_id": track_id})
 
     def _is_engaged(self, frame: np.ndarray, ev: FaceEvent) -> bool:
         """Check if employee is engaged (looking at camera for 2s + waved)."""

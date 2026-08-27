@@ -1,25 +1,45 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Webcam WebSocket</title>
+<title>Camera Stream</title>
 <style>
   body { background: #111; color: #eee; font: 14px system-ui, sans-serif; margin: 0; padding: 24px; }
   h1 { font-size: 16px; font-weight: 600; margin: 0 0 12px; }
-  #out { width: 640px; max-width: 100%; display: block; background: #000; border-radius: 4px; }
+  .controls { margin-bottom: 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  label { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+  .stage { position: relative; width: 640px; max-width: 100%; }
+  #out { width: 100%; display: block; background: #000; border-radius: 4px; }
+  /* Sized in frame pixels, stretched by CSS to the image box, so boxes can be drawn
+     in the coordinates the server sends without converting them first. */
+  #overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   #video { display: none; }
   #status { margin-top: 8px; color: #999; }
   b { color: #4ade80; font-variant-numeric: tabular-nums; }
   #palm { padding: 1px 8px; border-radius: 10px; background: #333; color: #999; }
   #palm.on { background: #4ade80; color: #052e16; font-weight: 600; }
+  #faces { padding: 1px 8px; border-radius: 10px; background: #333; color: #999; }
+  #faces.on { background: #fbbf24; color: #451a03; font-weight: 600; }
+  #faces.on.matched { background: #4ade80; color: #052e16; }
+  .mode-toggle { padding: 6px 12px; background: #333; border: 1px solid #444; color: #eee; border-radius: 4px; cursor: pointer; }
+  .mode-toggle.active { background: #4ade80; color: #052e16; font-weight: 600; }
 </style>
 
-<h1>Webcam &rarr; WebSocket &rarr; back</h1>
+<h1>Camera Stream</h1>
+<div class="controls">
+  <button id="modeToggle" class="mode-toggle active" onclick="toggleMode()">Server Camera (RTSP/Device)</button>
+  <button id="webcamToggle" class="mode-toggle" onclick="toggleMode()">Browser Webcam</button>
+  <label><input type="checkbox" id="showFps" checked> Show FPS</label>
+</div>
 <video id="video" autoplay muted playsinline></video>
-<!-- src is replaced per frame by the socket; the transparent GIF avoids a broken-image box -->
-<img id="out" alt="round-tripped webcam frames"
-     src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+<div class="stage">
+  <!-- src is replaced per frame by the socket; the transparent GIF avoids a broken-image box -->
+  <img id="out" alt="camera stream"
+       src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+  <canvas id="overlay"></canvas>
+</div>
 <div id="status">
   <b id="fps">0</b> fps &middot; <span id="state">connecting&hellip;</span> &middot;
-  <span id="palm">no palm</span>
+  <span id="palm">no palm</span> &middot;
+  <span id="faces">no faces</span>
 </div>
 
 <script>
@@ -28,59 +48,211 @@ const out = document.getElementById("out");
 const fpsEl = document.getElementById("fps");
 const stateEl = document.getElementById("state");
 const palmEl = document.getElementById("palm");
+const facesEl = document.getElementById("faces");
+const overlay = document.getElementById("overlay");
+const modeToggle = document.getElementById("modeToggle");
+const webcamToggle = document.getElementById("webcamToggle");
+const showFpsEl = document.getElementById("showFps");
 
-const SEND_INTERVAL_MS = 66;   // ~15 fps
+const SEND_INTERVAL_MS = 66;   // ~15 fps for browser webcam mode
 const JPEG_QUALITY = 0.7;
 
 const canvas = document.createElement("canvas");
 const ctx = canvas.getContext("2d");
+const octx = overlay.getContext("2d");
+const MATCH_COLOR = "#4ade80";    // recognised: box + label in green
+const UNKNOWN_COLOR = "#fbbf24";  // hand up, but under the recognition threshold
+const AWAY_COLOR = "#94a3b8";     // not looking, or no hand up: never identified
 let received = 0;
+let ws = null;
+let mode = "server"; // "server" or "webcam"
+let sendInterval = null;
 
 const proto = location.protocol === "https:" ? "wss:" : "ws:";
-const ws = new WebSocket(`${proto}//${location.host}/api/v1/webcam/ws`);
-ws.binaryType = "blob";
 
-ws.onmessage = (ev) => {
-  // Text frames are palm-detection events; binary frames are video.
+function clearOverlay() {
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+  facesEl.textContent = "no faces";
+  facesEl.classList.remove("on");
+}
+
+// Face detection runs only once a palm is in frame, so an empty list here means
+// either "no palm yet" or "palm but no face" -- both draw nothing.
+function drawFaces(msg) {
+  const faces = msg.faces || [];
+  // Match the canvas to the frame; assigning width/height also clears it.
+  if (overlay.width !== msg.width || overlay.height !== msg.height) {
+    overlay.width = msg.width || 640;
+    overlay.height = msg.height || 480;
+  }
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+
+  const named = faces.filter((f) => f.employee_code);
+  const looking = faces.filter((f) => f.looking);
+  const raised = faces.filter((f) => f.palm);
+  facesEl.textContent = faces.length === 0
+    ? "no faces"
+    : named.length > 0
+      ? named.map((f) => `${f.employee_code} ${f.confidence.toFixed(2)}`).join(", ")
+      : looking.length === 0
+        ? `${faces.length} face${faces.length > 1 ? "s" : ""} · not looking`
+        : raised.length === 0
+          ? `${looking.length} looking · no hand`
+          : `${raised.length} hand·up · unknown`;
+  facesEl.classList.toggle("on", faces.length > 0);
+  facesEl.classList.toggle("matched", named.length > 0);
+  if (faces.length === 0) return;
+
+  // Scale strokes and text with the frame so they stay legible after CSS resizing.
+  const scale = overlay.width / 640;
+  const font = Math.max(11, Math.round(14 * scale));
+  octx.lineWidth = Math.max(2, Math.round(2 * scale));
+  octx.font = `600 ${font}px system-ui, sans-serif`;
+  octx.textBaseline = "bottom";
+
+  for (const face of faces) {
+    const [x1, y1, x2, y2] = face.bbox;
+    // The label says exactly where this face dropped out of the pipeline, so a
+    // bystander who is simply not being identified never looks like a failure.
+    let color = AWAY_COLOR;
+    let label = face.looking ? "no hand" : `away ${face.yaw.toFixed(2)}`;
+    if (face.employee_code) {
+      color = MATCH_COLOR;
+      label = `${face.employee_code} ${face.confidence.toFixed(2)}`;
+    } else if (face.palm) {
+      color = UNKNOWN_COLOR;
+      label = `unknown ${face.confidence.toFixed(2)}`;
+    }
+
+    octx.strokeStyle = color;
+    // Dashed box for a face the pipeline stopped at, solid once it is engaged.
+    octx.setLineDash(face.palm ? [] : [6, 4]);
+    octx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    octx.setLineDash([]);
+
+    const padding = Math.round(4 * scale);
+    const boxWidth = octx.measureText(label).width + padding * 2;
+    const boxHeight = font + padding;
+    // Flip the label inside the box when the face is at the top of the frame.
+    const labelBottom = y1 - boxHeight < 0 ? y1 + boxHeight : y1;
+    octx.fillStyle = color;
+    octx.fillRect(x1, labelBottom - boxHeight, boxWidth, boxHeight);
+    octx.fillStyle = "#0c0a09";
+    octx.fillText(label, x1 + padding, labelBottom - padding / 2);
+  }
+}
+
+// Both sockets speak the same protocol: binary is a JPEG frame, text is one
+// detection result. The server camera detects on a background task, so its results
+// arrive less often than its frames -- boxes simply hold until the next one.
+function handleMessage(ev) {
   if (typeof ev.data === "string") {
     const msg = JSON.parse(ev.data);
+    if (msg.error) {
+      stateEl.textContent = msg.error;
+      return;
+    }
     palmEl.textContent = msg.palm ? `palm detected (${msg.score})` : "no palm";
     palmEl.classList.toggle("on", msg.palm);
+    drawFaces(msg);
     return;
   }
   const previous = out.src;
   out.src = URL.createObjectURL(ev.data);
   if (previous.startsWith("blob:")) URL.revokeObjectURL(previous);
   received++;
-};
-ws.onclose = () => { stateEl.textContent = "disconnected"; };
-ws.onerror = () => { stateEl.textContent = "socket error"; };
+}
 
-ws.onopen = async () => {
-  stateEl.textContent = "waiting for camera";
-  try {
-    video.srcObject = await navigator.mediaDevices.getUserMedia({
-      video: { width: 640, height: 480 },
-    });
-    await video.play();
-  } catch (err) {
-    stateEl.textContent = `camera unavailable: ${err.name} ` +
-      "(getUserMedia needs http://localhost or https)";
-    return;
+function connectServerCamera() {
+  const url = `${proto}//${location.host}/api/v1/camera/ws`;
+  ws = new WebSocket(url);
+  ws.binaryType = "blob";
+
+  ws.onmessage = handleMessage;
+  ws.onclose = () => { stateEl.textContent = "disconnected"; };
+  ws.onerror = () => { stateEl.textContent = "socket error"; };
+  ws.onopen = () => { stateEl.textContent = "streaming"; clearOverlay(); };
+}
+
+function connectBrowserWebcam() {
+  const url = `${proto}//${location.host}/api/v1/webcam/ws`;
+  ws = new WebSocket(url);
+  ws.binaryType = "blob";
+
+  ws.onmessage = handleMessage;
+  ws.onclose = () => { stateEl.textContent = "disconnected"; };
+  ws.onerror = () => { stateEl.textContent = "socket error"; };
+
+  ws.onopen = async () => {
+    stateEl.textContent = "waiting for camera";
+    try {
+      video.srcObject = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480 },
+      });
+      await video.play();
+    } catch (err) {
+      stateEl.textContent = `camera unavailable: ${err.name} ` +
+        "(getUserMedia needs http://localhost or https)";
+      return;
+    }
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+    stateEl.textContent = "streaming";
+
+    sendInterval = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > 0) return;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => {
+        if (blob && ws.readyState === WebSocket.OPEN) ws.send(blob);
+      }, "image/jpeg", JPEG_QUALITY);
+    }, SEND_INTERVAL_MS);
+  };
+}
+
+function disconnect() {
+  if (ws) {
+    ws.close();
+    ws = null;
   }
-  canvas.width = video.videoWidth || 640;
-  canvas.height = video.videoHeight || 480;
-  stateEl.textContent = "streaming";
+  if (sendInterval) {
+    clearInterval(sendInterval);
+    sendInterval = null;
+  }
+  if (video.srcObject) {
+    video.srcObject.getTracks().forEach(t => t.stop());
+    video.srcObject = null;
+  }
+  clearOverlay();
+  palmEl.textContent = "no palm";
+  palmEl.classList.remove("on");
+  stateEl.textContent = "disconnected";
+}
 
-  setInterval(() => {
-    // Skip the tick if the socket is closed or still draining — no unbounded queue.
-    if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > 0) return;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    canvas.toBlob((blob) => {
-      if (blob && ws.readyState === WebSocket.OPEN) ws.send(blob);
-    }, "image/jpeg", JPEG_QUALITY);
-  }, SEND_INTERVAL_MS);
-};
+function toggleMode() {
+  if (mode === "server") {
+    mode = "webcam";
+    modeToggle.classList.remove("active");
+    webcamToggle.classList.add("active");
+    disconnect();
+    connectBrowserWebcam();
+  } else {
+    mode = "server";
+    webcamToggle.classList.remove("active");
+    modeToggle.classList.add("active");
+    disconnect();
+    connectServerCamera();
+  }
+}
 
-setInterval(() => { fpsEl.textContent = received; received = 0; }, 1000);
+showFpsEl.addEventListener("change", () => {
+  fpsEl.style.display = showFpsEl.checked ? "inline" : "none";
+});
+
+// Initial connection
+connectServerCamera();
+
+setInterval(() => {
+  if (showFpsEl.checked) fpsEl.textContent = received;
+  received = 0;
+}, 1000);
 </script>

@@ -49,7 +49,7 @@ def _seed_own_database(container: Container) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    setup_logging(settings.log_level)
+    setup_logging(settings.log_level, quiet_native=settings.quiet_native_logs)
     container = Container(load_models=True)
     set_container(container)
     _seed_own_database(container)

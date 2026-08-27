@@ -49,6 +49,11 @@ services:
     env_file:
       - .env
     environment:
+      # Must be real env vars: the cv2 DLL reads them at process start, so setting
+      # them from Python is too late. Without these an RTSP feed logs a line per
+      # dropped packet to stderr. See app/core/logging.py.
+      OPENCV_LOG_LEVEL: ERROR
+      OPENCV_FFMPEG_LOGLEVEL: "8"
       DATABASE_URL: postgresql+asyncpg://face:face@postgres:5432/face_recognition
       DATABASE_SYNC_URL: postgresql+psycopg://face:face@postgres:5432/face_recognition
       ATTENDANCE_MQ_URL: amqp://guest:guest@rabbitmq:5672/
