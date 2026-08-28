@@ -149,6 +149,25 @@ class Settings(BaseSettings):
     # 100% forever, so they are parked here for an operator instead.
     attendance_dead_letter_exchange: str = "attendance.dlx"
     attendance_dead_letter_queue: str = "attendance.dead"
+    # The consumer writes into the attendance table, so it stays off until switched
+    # on deliberately -- nothing should start writing to an ERP database by default.
+    attendance_consumer_enabled: bool = False
+    # In-process daemon thread by default: one deployment unit, and the consumer is
+    # I/O-bound on MySQL while ONNX releases the GIL. Set false and run
+    # `python -m app.services.attendance_consumer` to give it its own process.
+    attendance_consumer_inproc: bool = True
+    # One at a time keeps queue order, and the first message of a day has to be the
+    # check-in. Raising this breaks that guarantee.
+    attendance_consumer_prefetch: int = 1
+    # The zone the attendance table is read in. Events travel as UTC; log_date_time
+    # and log_date_only are both derived from the local value. UTC here means an IST
+    # office's 09:15 arrival is stored as 03:45.
+    attendance_timezone: str = "UTC"
+    # A punch within this many seconds of an existing row for the same employee and
+    # day is ignored. Does double duty: it makes an at-least-once redelivery a no-op
+    # without any dedup store, and stops someone lingering in front of the camera
+    # from turning one arrival into several punches.
+    attendance_min_punch_gap_seconds: int = 60
 
 # --- Attendance log sync to an external ERP/DB (cron) -----------------------
     # Writes attendance punches to an external MySQL table (ct_hr_employee_attendance_log).

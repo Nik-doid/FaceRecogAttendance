@@ -32,6 +32,7 @@ from app.repositories.recognition_log_repo import RecognitionLogRepository
 from app.repositories.setting_repo import SettingRepository
 from app.repositories.unknown_face_repo import UnknownFaceRepository
 from app.runtime import Models, load_models
+from app.services.attendance_consumer import ConsumerRunner, build_attendance_consumer
 from app.services.attendance_reporter import build_attendance_reporter
 from app.services.attendance_reporter.base import AttendanceReporter
 from app.services.camera_service import CameraService
@@ -65,6 +66,7 @@ class Container:
         self.gallery_handle = GalleryHandle()
         self.frame_hub = FrameHub()
         self._camera_runner: CameraRunner | None = None
+        self.attendance_consumer: ConsumerRunner | None = None
 
         # Shared singletons.
         self.face_index = FaceIndex(dim=EMBEDDING_DIM)
@@ -241,8 +243,25 @@ class Container:
                 )
             return self._camera_runner
 
+    def start_attendance_consumer(self) -> None:
+        """Drain the attendance queue into the attendance table, in-process.
+
+        Off by default: nothing should start writing to an ERP database because a
+        service happened to boot. Set ATTENDANCE_CONSUMER_INPROC=false and run
+        `python -m app.services.attendance_consumer` to give it its own process.
+        """
+        if not self.settings.attendance_consumer_enabled:
+            return
+        if not self.settings.attendance_consumer_inproc:
+            self._log.info("attendance consumer is enabled but configured out-of-process")
+            return
+        self.attendance_consumer = ConsumerRunner(build_attendance_consumer(self.settings))
+        self.attendance_consumer.start()
+
     def shutdown(self) -> None:
         with self._lock:
+            if self.attendance_consumer is not None:
+                self.attendance_consumer.stop()
             if self._camera_runner is not None:
                 self._camera_runner.stop()
             if self.erp_sync_scheduler is not None:

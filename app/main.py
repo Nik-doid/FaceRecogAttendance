@@ -65,6 +65,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         container.start_rebuild()
         container.camera_service.start()
 
+    container.start_attendance_consumer()
     container.start_erp_sync()
 
     log.info(
