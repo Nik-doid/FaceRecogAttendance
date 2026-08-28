@@ -13,7 +13,16 @@ def test_comma_separated_lists_parsed() -> None:
         employee_photos_source="a,b",
     )
     assert s.onnx_providers == ["CUDAExecutionProvider", "CPUExecutionProvider"]
-    assert s.employee_photos_source == [Path("a"), Path("b")]
+    assert s.employee_photos_source == ["a", "b"]
+
+
+def test_photo_sources_keep_urls_intact() -> None:
+    """Held as strings, not Paths: Path("https://h/x") eats one of the slashes."""
+    s = Settings(employee_photos_source="uploads/employees, https://hr.example.com/photos/")
+    assert s.employee_photos_source == [
+        "uploads/employees",
+        "https://hr.example.com/photos/",
+    ]
 
 
 def test_defaults() -> None:

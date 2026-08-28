@@ -24,10 +24,20 @@ from app.api.router import api_router
 from app.config.settings import Settings
 from app.container import Container
 from app.database.base import Base
+from app.runtime import Models
 from tests.fakes import build_ai
 
 E1 = np.full(8, 0.5, dtype="float32")
 E2 = np.full(8, -0.5, dtype="float32")
+
+
+@pytest.fixture(scope="session")
+def models() -> Models:
+    """One SCRFD + one ArcFace for the whole test run; loading them costs seconds."""
+    from app.config.settings import settings as env_settings  # noqa: PLC0415
+    from app.runtime import load_models  # noqa: PLC0415
+
+    return load_models(env_settings)
 
 
 @pytest.fixture(autouse=True)

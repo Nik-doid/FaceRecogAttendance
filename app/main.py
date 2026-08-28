@@ -54,10 +54,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     set_container(container)
     _seed_own_database(container)
 
-    # Build the face index from existing employee photos; the API stays available.
-    container.start_rebuild()
+    # Enrol employee photos in the background so the API is up in seconds rather
+    # than minutes. Recognition switches on when it finishes; until then the
+    # pipeline still detects, gates on gaze and scans for palms.
+    container.start_gallery_build()
 
     if settings.camera_autostart:
+        # The legacy worker keeps its own DB-backed index, so it only pays for a
+        # rebuild when it is actually going to run.
+        container.start_rebuild()
         container.camera_service.start()
 
     container.start_erp_sync()

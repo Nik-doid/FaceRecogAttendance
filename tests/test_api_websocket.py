@@ -21,14 +21,15 @@ from app.core.face_processing.dispatchers import (
 )
 from app.core.face_processing.face_detection_handlers import ScrfdFaceDetection
 from app.core.face_processing.face_recognition_handlers import ArcFaceRecognition
-from app.core.face_processing.gallery import Gallery, load_gallery
+from app.core.face_processing.gallery import Gallery, build_gallery
 from app.core.face_processing.gaze import estimate_gaze
 from app.core.face_processing.palm_detection_handlers import (
     BlazePalmDetection,
     palm_search_box,
     scan_regions,
 )
-from app.runtime import Models, load_models
+from app.core.face_processing.photos import build_sources
+from app.runtime import Models
 from app.schemas.face_processing import (
     AttendanceSinkType,
     FaceDetectorType,
@@ -52,19 +53,13 @@ PHOTO_SOURCES = settings.employee_photos_source
 
 
 @pytest.fixture(scope="module")
-def models() -> Models:
-    """One SCRFD + one ArcFace for the whole module; loading them costs seconds."""
-    return load_models(settings)
-
-
-@pytest.fixture(scope="module")
 def enrolled(models: Models) -> Gallery:
-    return load_gallery(models, PHOTO_SOURCES)
+    return build_gallery(models, build_sources(PHOTO_SOURCES))
 
 
 @pytest.fixture(scope="module")
 def empty_gallery(models: Models, tmp_path_factory: pytest.TempPathFactory) -> Gallery:
-    return load_gallery(models, [tmp_path_factory.mktemp("no-photos")])
+    return build_gallery(models, build_sources([str(tmp_path_factory.mktemp("no-photos"))]))
 needs_photos = pytest.mark.skipif(
     not any(Path(root).is_dir() and any(Path(root).iterdir()) for root in PHOTO_SOURCES),
     reason="no enrolment photos under EMPLOYEE_PHOTOS_SOURCE",

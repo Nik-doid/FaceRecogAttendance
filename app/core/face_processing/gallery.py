@@ -1,26 +1,26 @@
-"""The enrolled-employee gallery step 3 searches.
+"""The enrolled-employee gallery step 4 searches.
 
-``app/services/index_service.py`` is the durable enrolment path: it embeds the same
-photos, persists them to ``face_embeddings`` and feeds the recognition worker. This is
-the pipeline-local equivalent with no database attached -- it walks
-``EMPLOYEE_PHOTOS_SOURCE`` straight into an in-memory :class:`FaceIndex`, which is what
-lets the webcam route recognise faces without a DB session in the request path.
-
-Built once per (models, sources) and cached for the process: enrolment costs one SCRFD
-pass plus one ArcFace pass per photo, far too slow to repeat per WebSocket connection.
-Sharing across connections is safe because both models are onnxruntime sessions --
-whose ``Run`` is thread-safe -- and :class:`FaceIndex` guards itself with an RLock. The
-``cv2.dnn`` palm net has neither guarantee, which is why that one stays per-connection.
+Photos are enumerated by :mod:`app.core.face_processing.photos`, which makes a local
+``uploads/`` directory and an HTTPS folder on an HR server interchangeable, and
+embeddings are reused across restarts by
+:mod:`app.core.face_processing.embedding_cache`. Everything here works on bytes, so
+neither concern leaks into the detect/embed/index path.
 
 The sessions arrive already loaded, from :mod:`app.runtime`. Building them here would
 mean a second SCRFD and a second 174 MiB ArcFace alongside the ones the process already
-has.
+has. Sharing is safe: both are onnxruntime sessions, whose ``Run`` is thread-safe, and
+:class:`FaceIndex` guards itself with an RLock. The ``cv2.dnn`` palm net has neither
+guarantee, which is why that one stays per-pipeline.
+
+:class:`GalleryHandle` exists so a rebuild can swap the whole gallery atomically while
+recognition is running: an in-flight match keeps the object it started with, and the
+next one picks up the new index. That is what lets a new hire appear without a restart,
+which the old process-wide dict cache -- never invalidated -- could not do.
 """
 
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,6 +30,12 @@ import numpy as np
 from app.ai.detector.scrfd import SCRFDDetector
 from app.ai.faiss.index import FaceIndex, IndexItem
 from app.ai.recognizer.arcface import ArcFaceRecognizer
+from app.core.face_processing.embedding_cache import (
+    CachedEmbedding,
+    EmbeddingCache,
+    model_fingerprint,
+)
+from app.core.face_processing.photos import PhotoRef, PhotoSource, collect
 from app.core.logging import get_logger
 from app.runtime import Models
 
@@ -37,9 +43,9 @@ log = get_logger(__name__)
 
 # w600k_r50 emits 512-d embeddings.
 EMBEDDING_DIM = 512
-# Kept local rather than imported from index_service: that module pulls SQLAlchemy and
-# app.models in behind it, and nothing on the webcam path should need a DB import.
-IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".bmp"})
+# Enrolment can run for minutes on a slow box; say something periodically so the
+# silence is never mistaken for a hang.
+PROGRESS_EVERY = 25
 
 
 @dataclass(frozen=True)
@@ -48,7 +54,8 @@ class Gallery:
 
     ``recognizer`` is None when nothing was enrolled: an empty index can never match,
     so there is no point handing a probe embedder to a caller that cannot use it.
-    ``ArcFaceRecognition._match`` already returns the face untouched in that case.
+    ``ArcFaceRecognition._match`` already returns the face untouched in that case,
+    which is also what makes a not-yet-built gallery safe to serve.
     """
 
     index: FaceIndex
@@ -57,90 +64,125 @@ class Gallery:
     photos: int
 
 
-_cache: dict[tuple[int, tuple[str, ...]], Gallery] = {}
-_lock = threading.Lock()
+EMPTY_GALLERY = Gallery(index=FaceIndex(dim=EMBEDDING_DIM), recognizer=None, employees=0, photos=0)
 
 
-def load_gallery(models: Models, sources: Sequence[str | Path]) -> Gallery:
-    """Return the cached gallery for these sources, building it on first use.
+class GalleryHandle:
+    """A swappable reference to the current gallery.
 
-    The lock is held across the build so two connections opening at once enrol once
-    rather than twice. Keyed on the identity of the shared ``Models`` bundle, so a
-    process with one bundle -- the normal case -- has exactly one gallery.
+    Recognition reads ``.current`` once per frame; a rebuild calls ``swap`` when it
+    finishes. No lock is held across a match, so a slow rebuild never stalls the
+    camera loop.
     """
-    key = (id(models), tuple(str(source) for source in sources))
-    with _lock:
-        cached = _cache.get(key)
-        if cached is None:
-            cached = _build(models, sources)
-            _cache[key] = cached
-        return cached
+
+    def __init__(self, gallery: Gallery | None = None) -> None:
+        self._gallery = gallery if gallery is not None else EMPTY_GALLERY
+        self._lock = threading.Lock()
+        self.ready = threading.Event()
+        if gallery is not None:
+            self.ready.set()
+
+    @property
+    def current(self) -> Gallery:
+        with self._lock:
+            return self._gallery
+
+    def swap(self, gallery: Gallery) -> None:
+        with self._lock:
+            self._gallery = gallery
+        self.ready.set()
 
 
-def _iter_photos(sources: Sequence[str | Path]) -> Iterator[tuple[Path, str]]:
-    """Yield (photo, employee_code) pairs. Each subdirectory name *is* the code."""
-    for source in sources:
-        root = Path(source)
-        if not root.is_dir():
-            log.warning("employee photo source missing", extra={"path": str(root)})
-            continue
-        for employee_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-            photos = sorted(
-                p for p in employee_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS
-            )
-            if not photos:
-                log.warning("no photos for employee", extra={"employee_code": employee_dir.name})
-            for photo in photos:
-                yield photo, employee_dir.name
+def build_gallery(
+    models: Models,
+    sources: list[PhotoSource],
+    *,
+    cache: EmbeddingCache | None = None,
+) -> Gallery:
+    """Enumerate every source, embed what is new, and return a searchable gallery.
 
-
-def _build(models: Models, sources: Sequence[str | Path]) -> Gallery:
-    photos = list(_iter_photos(sources))
+    Photos already in ``cache`` under the same key skip both model passes entirely,
+    which is the difference between a six-minute restart and a two-second one.
+    """
+    refs = collect(sources)
     index = FaceIndex(dim=EMBEDDING_DIM)
-    if not photos:
-        log.warning("recognition gallery is empty", extra={"sources": [str(s) for s in sources]})
+    if not refs:
+        log.warning("recognition gallery is empty: no enrolment photos found")
         return Gallery(index=index, recognizer=None, employees=0, photos=0)
 
-    recognizer = models.recognizer
-    detector = models.detector
-    items: list[IndexItem] = []
-    codes: set[str] = set()
-    for photo, code in photos:
-        embedding = _embed_photo(photo, detector, recognizer)
-        if embedding is None:
-            continue
-        items.append(IndexItem(employee_code=code, embedding=embedding))
-        codes.add(code)
+    cached = cache.load() if cache is not None else {}
+    entries: list[CachedEmbedding] = []
+    reused = 0
+    for position, ref in enumerate(refs, start=1):
+        hit = cached.get(ref.key)
+        if hit is not None:
+            entries.append(CachedEmbedding(ref.employee_code, ref.key, hit.embedding))
+            reused += 1
+        else:
+            embedding = _embed_ref(ref, models.detector, models.recognizer)
+            if embedding is not None:
+                entries.append(CachedEmbedding(ref.employee_code, ref.key, embedding))
+        if position % PROGRESS_EVERY == 0:
+            log.info("enrolling", extra={"done": position, "total": len(refs)})
 
-    index.rebuild(items)
+    index.rebuild(
+        [
+            IndexItem(employee_code=entry.employee_code, embedding=entry.embedding)
+            for entry in entries
+        ]
+    )
+    if cache is not None:
+        cache.save(entries)
+
+    codes = {entry.employee_code for entry in entries}
     log.info(
         "recognition gallery built",
-        extra={"employees": len(codes), "photos": len(items), "skipped": len(photos) - len(items)},
+        extra={
+            "employees": len(codes),
+            "photos": len(entries),
+            "reused_from_cache": reused,
+            "skipped": len(refs) - len(entries),
+        },
     )
-    return Gallery(index=index, recognizer=recognizer, employees=len(codes), photos=len(items))
+    return Gallery(
+        index=index,
+        recognizer=models.recognizer if entries else None,
+        employees=len(codes),
+        photos=len(entries),
+    )
 
 
-def _embed_photo(
-    photo: Path, detector: SCRFDDetector, recognizer: ArcFaceRecognizer
+def _embed_ref(
+    ref: PhotoRef, detector: SCRFDDetector, recognizer: ArcFaceRecognizer
 ) -> np.ndarray | None:
-    """Embed the largest-scoring face in one enrolment photo, or None if unusable."""
-    image = cv2.imread(str(photo))
+    """Embed the best-scoring face in one enrolment photo, or None if unusable."""
+    data = ref.read()
+    if not data:
+        return None
+    image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     if image is None:
-        log.warning("unreadable enrolment photo", extra={"photo": str(photo)})
+        log.warning("undecodable enrolment photo", extra={"photo": ref.label})
         return None
 
     faces = detector.detect(image)
     if not faces:
-        log.warning("no face in enrolment photo", extra={"photo": str(photo)})
+        log.warning("no face in enrolment photo", extra={"photo": ref.label})
         return None
 
     best = faces[0]  # SCRFDDetector sorts by score descending.
     if best.kps is None:
-        log.warning("no landmarks in enrolment photo", extra={"photo": str(photo)})
+        log.warning("no landmarks in enrolment photo", extra={"photo": ref.label})
         return None
 
     embedding = recognizer.embed(image, best.kps)
     if not bool(np.isfinite(embedding).all()):
-        log.warning("non-finite enrolment embedding", extra={"photo": str(photo)})
+        log.warning("non-finite enrolment embedding", extra={"photo": ref.label})
         return None
     return embedding
+
+
+def build_cache(settings_storage_path: Path, recognize_model: Path) -> EmbeddingCache:
+    """The cache directory for this deployment, fingerprinted by recognition model."""
+    return EmbeddingCache(
+        Path(settings_storage_path) / "gallery", model_fingerprint(recognize_model)
+    )

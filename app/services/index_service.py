@@ -124,6 +124,8 @@ class IndexService:
         rows: list[FaceEmbedding] = []
         try:
             for root in self._settings.employee_photos_source:
+                # This path predates remote sources and only understands directories;
+                # a URL fails the is_dir() check below and is skipped with a warning.
                 self._collect_from_root(Path(root), items, rows, stats)
 
             if items:

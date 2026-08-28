@@ -14,7 +14,13 @@ from app.ai.faiss.index import FaceIndex
 from app.ai.tracker.base import Tracker
 from app.ai.tracker.bytetrack import ByteTrackTracker
 from app.config.settings import Settings
-from app.core.face_processing.gallery import Gallery, load_gallery
+from app.core.face_processing.gallery import (
+    Gallery,
+    GalleryHandle,
+    build_cache,
+    build_gallery,
+)
+from app.core.face_processing.photos import build_sources
 from app.core.logging import get_logger
 from app.database.session import sync_session
 from app.repositories.audit_repo import AuditLogRepository
@@ -54,7 +60,7 @@ class Container:
         # through ``models``, which takes it again.
         self._lock = threading.RLock()
         self._models: Models | None = None
-        self._gallery: Gallery | None = None
+        self.gallery_handle = GalleryHandle()
 
         # Shared singletons.
         self.face_index = FaceIndex(dim=EMBEDDING_DIM)
@@ -174,13 +180,47 @@ class Container:
 
     @property
     def gallery(self) -> Gallery:
-        """The enrolled employees. Built once, from the shared sessions above."""
-        with self._lock:
-            if self._gallery is None:
-                self._gallery = load_gallery(
-                    self.models, self.settings.employee_photos_source
-                )
-            return self._gallery
+        """The current enrolled employees.
+
+        Returns the empty gallery until the background build finishes, which is
+        deliberately not an error: recognition returns faces unmatched and the rest of
+        the pipeline (detect, gaze, palm) runs normally in the meantime.
+        """
+        return self.gallery_handle.current
+
+    def build_gallery_now(self) -> Gallery:
+        """Enumerate the photo sources, embed, and swap in the result. Blocking."""
+        sources = build_sources(
+            self.settings.employee_photos_source,
+            timeout=self.settings.employee_photos_timeout_seconds,
+            auth_header=self.settings.employee_photos_auth_header,
+            manifest_name=self.settings.employee_photos_manifest,
+        )
+        try:
+            gallery = build_gallery(
+                self.models,
+                sources,
+                cache=build_cache(
+                    self.settings.storage_path,
+                    self.settings.models_dir / self.settings.recognize_model,
+                ),
+            )
+        finally:
+            for source in sources:
+                source.close()
+        self.gallery_handle.swap(gallery)
+        return gallery
+
+    def start_gallery_build(self) -> None:
+        """Enrol on a daemon thread so the API is up in seconds, not minutes."""
+
+        def run() -> None:
+            try:
+                self.build_gallery_now()
+            except Exception:  # noqa: BLE001 - the thread must never die silently
+                self._log.exception("gallery build failed")
+
+        threading.Thread(target=run, name="gallery-build", daemon=True).start()
 
     def shutdown(self) -> None:
         with self._lock:

@@ -117,10 +117,21 @@ class Settings(BaseSettings):
         "CPUExecutionProvider",
     ]
 
-    # --- Employee photo source (the existing system) --------------------------
-    employee_photos_source: Annotated[list[Path], NoDecode] = [
-        APP_ROOT / "uploads" / "employees"
+    # --- Employee photo source -----------------------------------------------
+    # Comma-separated, and each entry is either a local directory or an https:// URL
+    # of a folder laid out the same way (one subdirectory per employee_code). Held as
+    # strings, not Paths: Path("https://host/x") collapses the double slash and would
+    # silently mangle every URL.
+    employee_photos_source: Annotated[list[str], NoDecode] = [
+        str(APP_ROOT / "uploads" / "employees")
     ]
+    # Sent with every remote photo request, as "Header-Name: value".
+    employee_photos_auth_header: str = ""
+    employee_photos_timeout_seconds: float = 15.0
+    employee_photos_manifest: str = "manifest.json"
+    # Re-enumerate and re-embed on this interval so a new hire appears without a
+    # restart. 0 disables it.
+    gallery_refresh_seconds: int = 3600
 
     # --- Attendance reporting (message queue to the existing system) ----------
     attendance_broker: Literal["rabbitmq", "null"] = "rabbitmq"
@@ -200,9 +211,12 @@ class Settings(BaseSettings):
 
     @field_validator("employee_photos_source", mode="before")
     @classmethod
-    def _parse_path_list(cls, v: object) -> object:
+    def _parse_photo_sources(cls, v: object) -> object:
+        """Split on commas, keeping raw strings so URLs survive intact."""
         if isinstance(v, str):
-            return [Path(part.strip()) for part in v.split(",") if part.strip()]
+            return [part.strip() for part in v.split(",") if part.strip()]
+        if isinstance(v, list):
+            return [str(part).strip() for part in v if str(part).strip()]
         return v
 
     @field_validator("erp_camera_mapping", mode="before")
