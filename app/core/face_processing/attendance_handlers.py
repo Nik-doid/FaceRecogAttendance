@@ -17,6 +17,7 @@ import asyncio
 from abc import ABC, abstractmethod
 
 from app.core.logging import get_logger
+from app.core.metrics import ATTENDANCE_PUBLISH_FAILED, ATTENDANCE_PUBLISHED, RECOGNITIONS
 from app.schemas.face_processing import FaceResult, FrameContext
 from app.services.attendance_reporter.base import AttendanceEvent, AttendanceReporter
 from app.services.duplicate_suppressor import DuplicateSuppressor
@@ -56,8 +57,10 @@ class BrokerMarkAttendance(BaseMarkAttendance):
                     continue
                 # pika's BlockingConnection is synchronous and lock-guarded; calling
                 # it inline would stall the loop for the length of a broker reconnect.
+                RECOGNITIONS.labels(employee_code=event.employee_code).inc()
                 result = await asyncio.to_thread(self._reporter.report, event)
                 if result.success:
+                    ATTENDANCE_PUBLISHED.inc()
                     log.info(
                         "attendance published",
                         extra={
@@ -68,6 +71,7 @@ class BrokerMarkAttendance(BaseMarkAttendance):
                         },
                     )
                 else:
+                    ATTENDANCE_PUBLISH_FAILED.inc()
                     log.warning(
                         "attendance publish failed",
                         extra={

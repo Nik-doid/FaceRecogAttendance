@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -27,58 +28,52 @@ from app.api.router import api_router
 from app.config.settings import settings
 from app.container import Container
 from app.core.logging import get_logger, setup_logging
-from app.database.session import close_engines, sync_session
 
 log = get_logger(__name__)
 
 FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
 
 
-def _seed_own_database(container: Container) -> None:
-    """Ensure settings defaults and the camera row exist before the worker starts."""
-    with sync_session() as session:
-        container.settings_service.seed_defaults(session, settings)
-        container.camera_repo.get_or_create(
-            session,
-            settings.camera_id,
-            name=settings.camera_id,
-            rtsp_url=settings.rtsp_url,
+def _lifespan(injected: Container | None) -> Any:
+    """Build the lifespan, optionally around a container the caller already has.
+
+    Tests inject one so the app does not enrol photos or open a camera behind them;
+    an injected container is assumed to be started by whoever built it.
+    """
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        if injected is not None:
+            set_container(injected)
+            yield
+            return
+
+        setup_logging(settings.log_level, quiet_native=settings.quiet_native_logs)
+        container = Container()
+        set_container(container)
+
+        # Enrol employee photos in the background so the API is up in seconds rather
+        # than minutes. Recognition switches on when it finishes; until then the
+        # pipeline still detects, gates on gaze and scans for palms.
+        container.start_gallery_build()
+
+        if settings.camera_autostart:
+            container.camera_runner.start()
+
+        container.start_attendance_consumer()
+
+        log.info(
+            "service started",
+            extra={"camera_id": settings.camera_id, "env": settings.app_env},
         )
-        log.info("own database seeded")
+        yield
+        container.shutdown()
+        log.info("service stopped")
+
+    return lifespan
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    setup_logging(settings.log_level, quiet_native=settings.quiet_native_logs)
-    container = Container(load_models=True)
-    set_container(container)
-    _seed_own_database(container)
-
-    # Enrol employee photos in the background so the API is up in seconds rather
-    # than minutes. Recognition switches on when it finishes; until then the
-    # pipeline still detects, gates on gaze and scans for palms.
-    container.start_gallery_build()
-
-    if settings.camera_autostart:
-        # The legacy worker keeps its own DB-backed index, so it only pays for a
-        # rebuild when it is actually going to run.
-        container.start_rebuild()
-        container.camera_service.start()
-
-    container.start_attendance_consumer()
-    container.start_erp_sync()
-
-    log.info(
-        "service started",
-        extra={"camera_id": settings.camera_id, "env": settings.app_env},
-    )
-    yield
-    container.shutdown()
-    await close_engines()
-    log.info("service stopped")
-
-
-def create_app() -> FastAPI:
+def create_app(container: Container | None = None) -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         version=__version__,
@@ -86,7 +81,7 @@ def create_app() -> FastAPI:
             "Face recognition service for a single RTSP camera. Reports attendance "
             "events to the existing attendance system via a message queue."
         ),
-        lifespan=lifespan,
+        lifespan=_lifespan(container),
     )
     app.include_router(api_router, prefix="/api/v1")
 

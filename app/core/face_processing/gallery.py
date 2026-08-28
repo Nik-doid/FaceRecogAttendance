@@ -37,6 +37,7 @@ from app.core.face_processing.embedding_cache import (
 )
 from app.core.face_processing.photos import PhotoRef, PhotoSource, collect
 from app.core.logging import get_logger
+from app.core.metrics import GALLERY_SIZE
 from app.runtime import Models
 
 log = get_logger(__name__)
@@ -135,6 +136,7 @@ def build_gallery(
         cache.save(entries)
 
     codes = {entry.employee_code for entry in entries}
+    GALLERY_SIZE.set(len(codes))
     log.info(
         "recognition gallery built",
         extra={

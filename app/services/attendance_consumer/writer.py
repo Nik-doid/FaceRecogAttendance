@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core.logging import get_logger
+from app.core.metrics import ATTENDANCE_WRITTEN
 from app.services.attendance_consumer.mysql import AttendanceMysql, AttendanceRow
 from app.services.attendance_consumer.policy import (
     IN_OUT_MODE,
@@ -94,6 +95,7 @@ class AttendanceLogWriter:
                     "reason": decision.reason,
                 },
             )
+            ATTENDANCE_WRITTEN.labels(action="skipped").inc()
             return Outcome("skipped", employee_code, decision.reason)
 
         row = AttendanceRow(
@@ -122,6 +124,7 @@ class AttendanceLogWriter:
                 )
             action = "updated"
 
+        ATTENDANCE_WRITTEN.labels(action=action).inc()
         log.info(
             "attendance recorded",
             extra={

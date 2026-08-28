@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -36,21 +36,6 @@ class DetectedFace:
         return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
 
 
-@dataclass
-class QualityReport:
-    """Result of the quality gates: passed iff no gate flagged the face."""
-
-    passed: bool
-    reasons: list[str] = field(default_factory=list)
-    scores: dict[str, float] = field(default_factory=dict)
-
-
-@dataclass
-class TrackedFace:
-    """A detection carrying an identity track id (from the tracker)."""
-
-    face: DetectedFace
-    track_id: int
 
 
 @dataclass(frozen=True)
@@ -60,17 +45,3 @@ class IndexResult:
     employee_code: str
     score: float
     distance: float
-
-
-@dataclass
-class RecognitionResult:
-    """Outcome of processing a single face through the pipeline."""
-
-    face: DetectedFace
-    track_id: int | None
-    embedding: np.ndarray
-    matched: bool
-    employee_code: str | None = None
-    confidence: float = 0.0
-    quality: QualityReport | None = None
-    liveness_score: float | None = None

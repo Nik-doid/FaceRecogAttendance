@@ -45,11 +45,6 @@ BUFFALO_L_MEMBERS = frozenset({"det_10g.onnx", "w600k_r50.onnx"})
 
 # MediaPipe hand landmarker. Unlike the insightface models this is a direct file
 # download; the URL matches the one HandDetector quotes in its error message.
-HAND_LANDMARKER_NAME = "hand_landmarker.task"
-HAND_LANDMARKER_URL = (
-    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
-    "hand_landmarker/float16/latest/hand_landmarker.task"
-)
 
 # BlazePalm palm detector (OpenCV Zoo, Apache 2.0), run through ``cv2.dnn`` -- so it
 # needs no dependency the base install lacks. Used for palm *presence* only, which is
@@ -87,16 +82,13 @@ def ensure_models(settings: Settings) -> None:
         for name in {settings.detect_model, settings.recognize_model}
         if name in BUFFALO_L_MEMBERS and find_model_file(name, dir_str) is None
     )
-    hand_missing = not (models_dir / HAND_LANDMARKER_NAME).is_file()
     palm_missing = not (models_dir / PALM_DETECTOR_NAME).is_file()
-    if not wanted and not hand_missing and not palm_missing:
+    if not wanted and not palm_missing:
         return
 
     models_dir.mkdir(parents=True, exist_ok=True)
     if wanted:
         _fetch_buffalo_members(wanted, models_dir)
-    if hand_missing:
-        _fetch(HAND_LANDMARKER_URL, models_dir / HAND_LANDMARKER_NAME)
     if palm_missing:
         _fetch(PALM_DETECTOR_URL, models_dir / PALM_DETECTOR_NAME)
 
@@ -191,8 +183,6 @@ def main() -> int:
         for name in (settings.detect_model, settings.recognize_model)
         if find_model_file(name, dir_str) is None
     ]
-    if not (Path(settings.models_dir) / HAND_LANDMARKER_NAME).is_file():
-        missing.append(HAND_LANDMARKER_NAME)
     if missing:
         _log.error("Still missing from %s: %s", settings.models_dir, ", ".join(missing))
         return 1

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from app.config.settings import Settings
 
 
@@ -27,12 +25,13 @@ def test_photo_sources_keep_urls_intact() -> None:
 
 def test_defaults() -> None:
     s = Settings(_env_file=None)
-    assert s.frame_skip == 2
     assert s.recognition_threshold == 0.60
     assert s.camera_id == "cam-01"
     assert s.attendance_broker == "rabbitmq"
 
 
-def test_path_derived() -> None:
-    s = Settings(storage_path=Path("/tmp/storage"))
-    assert s.face_index_dump_path == Path("/tmp/storage") / "face_index"
+def test_the_consumer_is_off_until_switched_on() -> None:
+    """Nothing writes to an ERP database because a service happened to boot."""
+    assert Settings(_env_file=None).attendance_consumer_enabled is False
+
+

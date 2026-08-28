@@ -1,49 +1,41 @@
-"""Prometheus metrics registry for the service.
+"""Prometheus collectors, all of which are actually incremented.
 
-Exposed by GET /metrics in text exposition format. Kept as a module singleton so
-both the API layer and the background worker report into the same registry.
+The previous set had sixteen, thirteen of them only ever touched by the recognition
+worker that no longer exists, plus a gauge that was never set at all. These follow the
+one flow the service has: frames in, faces recognised, events published, rows written.
 """
 
 from __future__ import annotations
 
 from prometheus_client import Counter, Gauge, Histogram
 
-FRAMES_PROCESSED = Counter("face_frames_processed_total", "Frames fed through the pipeline")
-FRAMES_SKIPPED = Counter("face_frames_skipped_total", "Frames skipped by frame-skip policy")
-FACES_DETECTED = Counter("face_faces_detected_total", "Faces detected by SCRFD")
+FRAMES_PROCESSED = Counter(
+    "frames_processed_total", "Frames read from the camera"
+)
+SCANS_COMPLETED = Counter(
+    "scans_completed_total", "Frames put through the recognition pipeline"
+)
+SCAN_SECONDS = Histogram(
+    "scan_seconds", "Wall time of one pipeline pass"
+)
 RECOGNITIONS = Counter(
-    "face_recognitions_total",
-    "Recognition events by employee",
-    labelnames=["employee_code"],
+    "recognitions_total", "Faces matched to an employee", ["employee_code"]
 )
-UNKNOWN_FACES = Counter("face_unknown_faces_total", "Unrecognized faces seen")
-REPORTS_PUBLISHED = Counter(
-    "face_attendance_reports_total", "Attendance events published to MQ"
+ATTENDANCE_PUBLISHED = Counter(
+    "attendance_published_total", "Attendance events published to the broker"
 )
-REPORTS_FAILED = Counter(
-    "face_attendance_reports_failed_total", "Attendance events that failed to publish"
+ATTENDANCE_PUBLISH_FAILED = Counter(
+    "attendance_publish_failed_total", "Attendance events the broker would not take"
 )
-QUALITY_REJECTED = Counter(
-    "face_quality_rejected_total",
-    "Frames/faces rejected by quality gates",
-    labelnames=["reason"],
+ATTENDANCE_WRITTEN = Counter(
+    "attendance_written_total", "Attendance rows written", ["action"]
 )
-LIVENESS_FAILED = Counter("face_liveness_failed_total", "Faces rejected by anti-spoofing")
-CAMERA_RECONNECTS = Counter("face_camera_reconnects_total", "RTSP reconnection attempts")
-PROCESSING_TIME = Histogram(
-    "face_processing_seconds",
-    "Time to process a single frame end-to-end",
-    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
+ATTENDANCE_DEAD_LETTERED = Counter(
+    "attendance_dead_lettered_total", "Messages parked for an operator", ["reason"]
 )
-INDEX_SIZE = Gauge("face_index_size", "Number of embeddings currently in the FAISS index")
-CAMERA_CONNECTED = Gauge("face_camera_connected", "1 if the camera worker is connected, else 0")
-
-ERP_SYNC_INSERTED = Counter(
-    "face_erp_sync_inserted_total", "Attendance rows written to the ERP DB by the sync"
+CAMERA_CONNECTED = Gauge(
+    "camera_connected", "1 when the camera is delivering frames"
 )
-ERP_SYNC_FAILED = Counter(
-    "face_erp_sync_failed_total", "Attendance rows the ERP sync failed to write"
-)
-ERP_SYNC_PENDING = Gauge(
-    "face_erp_sync_pending", "Recognition events awaiting ERP attendance-log write"
+GALLERY_SIZE = Gauge(
+    "gallery_employees", "Employees currently enrolled"
 )

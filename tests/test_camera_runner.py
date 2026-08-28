@@ -90,7 +90,7 @@ def _runner(
     )
     return CameraRunner(
         settings,
-        models=None,  # type: ignore[arg-type]
+        models=lambda: None,  # type: ignore[arg-type,return-value]
         gallery=GalleryHandle(),
         hub=hub or FrameHub(),
         reader_factory=lambda: reader,

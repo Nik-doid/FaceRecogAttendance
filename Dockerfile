@@ -27,8 +27,7 @@ COPY --from=deps /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 
 COPY app ./app
-COPY alembic ./alembic
-COPY alembic.ini ./
+COPY frontend ./frontend
 COPY docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
 

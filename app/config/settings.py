@@ -47,13 +47,11 @@ class Settings(BaseSettings):
     camera_source: Literal["rtsp", "device"] = "rtsp"
     camera_device_index: int = 0
     camera_autostart: bool = False
-    frame_skip: int = 2
     max_frame_width: int = 1280
     # Run the webcam pipeline on every Nth frame of the /camera/ws stream. Detection
     # runs concurrently with streaming, so this caps CPU, not the frame rate. At ~30fps
     # 10 is a scan every ~330ms, which leaves a real gap either side of a
     # PALM_SCAN_GRID=2 scan instead of pegging a core continuously.
-    camera_detect_every: int = 10
     # The camera runner is time-driven, not frame-counted: counting frames at 30fps
     # implies "scan every 330ms" while a frame reaching recognition costs over a
     # second. Start a scan at most this often, and never while one is in flight.
@@ -86,33 +84,21 @@ class Settings(BaseSettings):
     recognition_threshold: float = 0.60
     detect_thresh: float = 0.40
     duplicate_timeout_seconds: int = 300
-    minimum_face_size: int = 80
-    liveness_enabled: bool = True
-    silentface_threshold: float = 0.50
-    tracking_enabled: bool = False
     # Require employee to be "engaged" (looking at camera + waving) before recording attendance.
     # When False, any quality-passed face triggers attendance (legacy behavior).
-    require_engagement: bool = True
 
     # --- Engagement (CCTV-optimized) -----------------------------------------
     # Minimum face width as a fraction of frame width.
     # High-mounted CCTV captures very small faces (1.5-5% of frame width). Default 1.5%.
-    engagement_min_face_ratio: float = 0.015
     # Required continuous engagement time in seconds (looking + hand visible).
     # Wall-clock time, independent of frame_skip. Default 1.0 second.
-    engagement_required_seconds: float = 1.0
 
     # --- Face quality gates --------------------------------------------------
-    quality_min_blur: float = 100.0
-    quality_min_lighting: float = 40.0
-    quality_max_lighting: float = 220.0
-    quality_max_roll_deg: float = 30.0
 
     # --- AI models -----------------------------------------------------------
     models_dir: Path = APP_ROOT / "models"
     detect_model: str = "det_10g.onnx"
     recognize_model: str = "w600k_r50.onnx"
-    silentface_model_path: Path | None = None
     # Fetch missing SCRFD/ArcFace/hand-landmarker files into models_dir on first
     # boot. Turn off for air-gapped hosts or images that bake the models in.
     models_auto_download: bool = True
@@ -173,7 +159,6 @@ class Settings(BaseSettings):
     # Writes attendance punches to an external MySQL table (ct_hr_employee_attendance_log).
     # Disabled unless erp_sync_enabled is true; runs on a background interval
     # scheduler and/or on demand via the /sync API.
-    erp_sync_enabled: bool = False
     erp_db_host: str = "localhost"
     erp_db_port: int = 3306
     erp_db_name: str = "attendance"
@@ -188,9 +173,6 @@ class Settings(BaseSettings):
     # proper per-employee-per-day rule: first punch = check-in(1), second = check-out(2),
     # any further punches that day are skipped (no duplicate check-ins/outs). The rule
     # is seeded from rows already present in the target attendance table for that day.
-    erp_in_out_mode: str = "toggle"
-    erp_sync_interval_seconds: int = 300
-    erp_sync_batch_size: int = 500
     # Employee code -> ERP attendance id lookup.
     # The external system's employee table (emp_code -> emp_id) provides the
     # attendance_id_no written to the log; table + columns are configurable here.
@@ -202,20 +184,14 @@ class Settings(BaseSettings):
     erp_employee_active_filter: str = "_status"
 
     # --- This service's own database -----------------------------------------
-    database_url: str = "postgresql+asyncpg://face:face@localhost:5432/face_recognition"
-    database_sync_url: str = "postgresql+psycopg://face:face@localhost:5432/face_recognition"
 
     # --- Storage ---------------------------------------------------------------
     storage_path: Path = APP_ROOT / "storage"
-    unknown_faces_dir: Path = APP_ROOT / "storage" / "unknown_faces"
-    snapshots_dir: Path = APP_ROOT / "storage" / "snapshots"
-    snapshot_enabled: bool = True
 
     # --- Security ---------------------------------------------------------------
     jwt_secret_key: str = "insecure-dev-secret-change-me-please-use-a-long-random-string"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60
-    api_token: str = ""
     rate_limit_max_requests: int = 20
     rate_limit_window_seconds: int = 60
 
@@ -224,9 +200,6 @@ class Settings(BaseSettings):
     api_port: int = 8000
 
     # --- Derived paths ------------------------------------------------------------
-    @property
-    def face_index_dump_path(self) -> Path:
-        return self.storage_path / "face_index"
 
     # --- Validation -------------------------------------------------------------
     @field_validator("onnx_providers", mode="before")

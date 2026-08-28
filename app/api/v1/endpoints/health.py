@@ -1,12 +1,11 @@
-"""Health and liveness endpoints."""
+"""Health and liveness."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter
-from sqlalchemy import text
 
 from app import __version__
-from app.api.deps import ContainerDep, db_session, run_db
+from app.api.deps import ContainerDep
 from app.config.settings import settings
 from app.core.logging import get_logger
 from app.schemas.common import HealthResponse
@@ -17,22 +16,21 @@ log = get_logger(__name__)
 
 @router.get("/health", response_model=HealthResponse)
 async def health(container: ContainerDep) -> HealthResponse:
-    database = "up"
-    try:
-        with db_session() as session:
-            await run_db(session.execute, text("SELECT 1"))
-    except Exception as exc:  # noqa: BLE001
-        log.error("health check DB failure", extra={"error": str(exc)})
-        database = "down"
+    """Report what the service can currently do.
 
-    camera_state = container.camera_service.state
-    camera = "running" if camera_state.running else "stopped"
+    There is no local database to ping any more. What matters instead is whether the
+    camera is capturing and whether anyone is enrolled: a running camera with an empty
+    gallery detects faces and recognises nobody, which is degraded, not healthy.
+    """
+    runner = container.camera_runner
+    gallery = container.gallery
+    ready = container.gallery_handle.ready.is_set()
 
     return HealthResponse(
-        status="ok" if database == "up" else "degraded",
+        status="ok" if ready else "degraded",
         service=settings.app_name,
         version=__version__,
-        database=database,
-        camera=camera,
-        index_size=container.face_index.size,
+        database="n/a",
+        camera="running" if runner.running else "stopped",
+        index_size=gallery.index.size,
     )

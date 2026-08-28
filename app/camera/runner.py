@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -35,6 +36,12 @@ from app.camera.hub import FrameHub
 from app.config.settings import Settings
 from app.core.face_processing.gallery import GalleryHandle
 from app.core.logging import get_logger
+from app.core.metrics import (
+    CAMERA_CONNECTED,
+    FRAMES_PROCESSED,
+    SCAN_SECONDS,
+    SCANS_COMPLETED,
+)
 from app.runtime import Models
 from app.schemas.face_processing import (
     AttendanceSinkType,
@@ -94,7 +101,7 @@ class CameraRunnerAlreadyRunningError(RuntimeError):
 @dataclass
 class _Deps:
     settings: Settings
-    models: Models
+    models: Callable[[], Models]
     gallery: GalleryHandle
     hub: FrameHub
     reporter: AttendanceReporter | None = None
@@ -105,12 +112,17 @@ class _Deps:
 
 
 class CameraRunner:
-    """Owns the camera and the pipeline; publishes into a :class:`FrameHub`."""
+    """Owns the camera and the pipeline; publishes into a :class:`FrameHub`.
+
+    ``models`` is a factory, not an instance, so constructing a runner costs nothing.
+    Asking /camera/status whether the camera is stopped should not load 174 MiB of
+    ArcFace to answer.
+    """
 
     def __init__(
         self,
         settings: Settings,
-        models: Models,
+        models: Callable[[], Models],
         gallery: GalleryHandle,
         hub: FrameHub,
         *,
@@ -183,6 +195,7 @@ class CameraRunner:
         finally:
             self._deps.state.running = False
             self._deps.state.connected = False
+            CAMERA_CONNECTED.set(0)
             asyncio.set_event_loop(None)
             loop.close()
             log.info("camera runner stopped")
@@ -196,6 +209,7 @@ class CameraRunner:
         detected_at: datetime | None = None
         detected_shape = (0, 0)
         last_scan = 0.0
+        scan_started = 0.0
         scan_interval = max(0.05, self._deps.settings.camera_scan_interval_ms / 1000.0)
 
         log.info("camera runner started", extra={"camera_id": self._deps.settings.camera_id})
@@ -214,6 +228,7 @@ class CameraRunner:
                         continue
                     state.connected = True
                     state.last_error = None
+                    CAMERA_CONNECTED.set(1)
                     backoff = MIN_BACKOFF_SECONDS
 
                 try:
@@ -227,6 +242,7 @@ class CameraRunner:
                     frame = None
                 if frame is None:
                     state.connected = False
+                    CAMERA_CONNECTED.set(0)
                     state.reconnects += 1
                     log.warning("camera read failed; reconnecting")
                     _close(reader)
@@ -234,6 +250,7 @@ class CameraRunner:
                     continue
 
                 state.frames += 1
+                FRAMES_PROCESSED.inc()
                 state.last_frame_at = datetime.now(UTC)
                 ok, jpeg = cv2.imencode(
                     ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
@@ -242,6 +259,7 @@ class CameraRunner:
                     self._deps.hub.publish_frame(jpeg.tobytes())
 
                 if detecting is not None and detecting.done():
+                    SCAN_SECONDS.observe(time.monotonic() - scan_started)
                     payload = self._harvest(detecting, detected_shape)
                     detecting = None
                     if payload is not None:
@@ -254,6 +272,8 @@ class CameraRunner:
                     detected_shape = frame.shape[:2]
                     detected_at = datetime.now(UTC)
                     state.scans += 1
+                    SCANS_COMPLETED.inc()
+                    scan_started = time.monotonic()
                     detecting = asyncio.create_task(
                         process.process_frames(
                             frame,
@@ -296,7 +316,7 @@ class CameraRunner:
                 palm_search_margin=settings.palm_search_margin,
                 recognition_threshold=settings.recognition_threshold,
             ),
-            self._deps.models,
+            self._deps.models(),
             self._deps.gallery.current,
             settings.models_dir,
             reporter=self._deps.reporter,

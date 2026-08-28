@@ -10,10 +10,6 @@ dependencies = [
     "uvicorn[standard]>=0.30,<1.0",
     "pydantic>=2.7,<3.0",
     "pydantic-settings>=2.3,<3.0",
-    "sqlalchemy[asyncio]>=2.0.30,<3.0",
-    "asyncpg>=0.29,<1.0",
-    "psycopg[binary]>=3.2,<4.0",
-    "alembic>=1.13,<2.0",
     "opencv-python-headless>=4.9,<5.0",
     "numpy>=1.26,<3.0",
     "pika>=1.3,<2.0",
@@ -26,7 +22,8 @@ dependencies = [
     # faiss is part of the core pipeline (in-memory embedding index) and has plain
     # Windows/manylinux wheels, so it lives in base deps rather than the ai extra.
     "faiss-cpu>=1.8,<2.0",
-    "mediapipe>=1.0.1",
+    # ATTENDANCE_TIMEZONE needs a tz database, and Windows has none of its own.
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]
@@ -42,12 +39,6 @@ ai = [
     "onnx>=1.16,<1.17",
     "ml-dtypes>=0.4,<0.5",
 ]
-# Local debugging / ops UI (Streamlit). Not installed by the service Docker image.
-frontend = [
-    "streamlit>=1.36,<2.0",
-    "requests>=2.32,<3.0",
-]
-
 [dependency-groups]
 dev = [
     "pytest>=8.2,<9.0",
@@ -55,7 +46,6 @@ dev = [
     "pytest-cov>=5.0,<7.0",
     "ruff>=0.5,<1.0",
     "mypy>=1.10,<2.0",
-    "aiosqlite>=0.20,<1.0",
 ]
 
 [tool.uv]

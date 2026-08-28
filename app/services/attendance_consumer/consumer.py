@@ -29,6 +29,7 @@ import time
 from typing import Any
 
 from app.core.logging import get_logger
+from app.core.metrics import ATTENDANCE_DEAD_LETTERED
 from app.services.attendance_consumer.mysql import TransientDatabaseError
 from app.services.attendance_consumer.writer import (
     REASON_MALFORMED,
@@ -159,6 +160,7 @@ class AttendanceConsumer:
         self._channel.basic_nack(delivery_tag=tag, requeue=True)
 
     def _dead_letter(self, tag: int, body: bytes, reason: str, detail: str) -> None:
+        ATTENDANCE_DEAD_LETTERED.labels(reason=reason).inc()
         log.error(
             "attendance message dead-lettered",
             extra={"event": "attendance_dead_lettered", "reason": reason, "detail": detail},
