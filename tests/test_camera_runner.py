@@ -26,9 +26,16 @@ NO_PALM = PalmResult(detected=False, score=0.0)
 class FakeReader:
     """A camera that yields blank frames, and can be told to fail on demand."""
 
-    def __init__(self, *, opens: bool = True, fail_after: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        opens: bool = True,
+        fail_after: int | None = None,
+        raise_after: int | None = None,
+    ) -> None:
         self._opens = opens
         self._fail_after = fail_after
+        self._raise_after = raise_after
         self.reads = 0
         self.opened = 0
         self.closed = 0
@@ -39,6 +46,8 @@ class FakeReader:
 
     def read(self) -> np.ndarray | None:
         self.reads += 1
+        if self._raise_after is not None and self.reads > self._raise_after:
+            raise OSError("rtsp socket died")
         if self._fail_after is not None and self.reads > self._fail_after:
             return None
         return np.zeros((120, 160, 3), np.uint8)
@@ -186,6 +195,19 @@ def test_reconnects_when_a_read_fails() -> None:
     finally:
         runner.stop()
     assert runner.state.reconnects > 0
+
+
+def test_a_read_that_raises_is_survived() -> None:
+    """OpenCV can throw on a half-open RTSP socket, not merely return None."""
+    reader, process = FakeReader(raise_after=2), FakeProcess()
+    runner = _runner(reader, process)
+    try:
+        runner.start()
+        assert _wait(lambda: reader.opened > 1), "never recovered from a raising read"
+        assert runner.running, "an exception from the camera killed the runner"
+    finally:
+        runner.stop()
+    assert "rtsp socket died" in (runner.state.last_error or "")
 
 
 def test_a_camera_that_will_not_open_keeps_retrying() -> None:

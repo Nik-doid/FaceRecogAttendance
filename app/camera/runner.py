@@ -36,7 +36,14 @@ from app.config.settings import Settings
 from app.core.face_processing.gallery import GalleryHandle
 from app.core.logging import get_logger
 from app.runtime import Models
-from app.schemas.face_processing import FaceProcessConfig, FrameContext, FrameResult
+from app.schemas.face_processing import (
+    AttendanceSinkType,
+    FaceProcessConfig,
+    FrameContext,
+    FrameResult,
+)
+from app.services.attendance_reporter.base import AttendanceReporter
+from app.services.duplicate_suppressor import DuplicateSuppressor
 from app.services.face_recognition.process import FaceRecognitionProcess
 from app.workers.camera.reader import CameraReader
 
@@ -90,6 +97,8 @@ class _Deps:
     models: Models
     gallery: GalleryHandle
     hub: FrameHub
+    reporter: AttendanceReporter | None = None
+    suppressor: DuplicateSuppressor | None = None
     reader_factory: Any = None
     process_factory: Any = None
     state: RunnerState = field(default_factory=RunnerState)
@@ -105,6 +114,8 @@ class CameraRunner:
         gallery: GalleryHandle,
         hub: FrameHub,
         *,
+        reporter: AttendanceReporter | None = None,
+        suppressor: DuplicateSuppressor | None = None,
         reader_factory: Any = None,
         process_factory: Any = None,
     ) -> None:
@@ -113,6 +124,8 @@ class CameraRunner:
             models=models,
             gallery=gallery,
             hub=hub,
+            reporter=reporter,
+            suppressor=suppressor,
             reader_factory=reader_factory or (lambda: _default_reader(settings)),
             process_factory=process_factory,
         )
@@ -203,7 +216,15 @@ class CameraRunner:
                     state.last_error = None
                     backoff = MIN_BACKOFF_SECONDS
 
-                frame = reader.read()
+                try:
+                    frame = reader.read()
+                except Exception as exc:  # noqa: BLE001 - a camera may raise, not just
+                    # return None. OpenCV can throw on a half-open RTSP socket, and
+                    # letting that escape kills the runner thread for good -- exactly
+                    # the unattended failure this loop exists to survive.
+                    log.warning("camera read raised", extra={"error": str(exc)})
+                    state.last_error = str(exc)
+                    frame = None
                 if frame is None:
                     state.connected = False
                     state.reconnects += 1
@@ -255,8 +276,16 @@ class CameraRunner:
             result: FaceRecognitionProcess = self._deps.process_factory()
             return result
         settings = self._deps.settings
+        # This is the one pipeline allowed to record attendance: it is the only one
+        # that knows which camera it is and when the frame was captured.
+        sink = (
+            AttendanceSinkType.RABBITMQ
+            if self._deps.reporter is not None
+            else AttendanceSinkType.NULL
+        )
         return FaceRecognitionProcess(
             FaceProcessConfig(
+                attendance_sink=sink,
                 palm_score_threshold=settings.palm_score_threshold,
                 # Only reached for a face with no landmarks to anchor the palm search
                 # to, which the looking gate makes rare.
@@ -270,6 +299,8 @@ class CameraRunner:
             self._deps.models,
             self._deps.gallery.current,
             settings.models_dir,
+            reporter=self._deps.reporter,
+            suppressor=self._deps.suppressor,
         )
 
     def _harvest(

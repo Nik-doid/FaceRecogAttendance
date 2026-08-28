@@ -144,6 +144,11 @@ class Settings(BaseSettings):
     attendance_routing_key: str = "checkin"
     attendance_queue: str = "attendance.checkin"
     attendance_publish_retries: int = 3
+    # Where the consumer sends messages it can never process: a malformed payload, an
+    # unknown employee, an unmapped camera. Requeueing those would spin a core at
+    # 100% forever, so they are parked here for an operator instead.
+    attendance_dead_letter_exchange: str = "attendance.dlx"
+    attendance_dead_letter_queue: str = "attendance.dead"
 
 # --- Attendance log sync to an external ERP/DB (cron) -----------------------
     # Writes attendance punches to an external MySQL table (ct_hr_employee_attendance_log).

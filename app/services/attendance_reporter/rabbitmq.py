@@ -34,6 +34,8 @@ class RabbitMQAttendanceReporter(AttendanceReporter):
         routing_key: str,
         queue: str | None = None,
         retries: int = 3,
+        dead_letter_exchange: str = "",
+        dead_letter_queue: str = "",
     ) -> None:
         try:
             import pika  # noqa: PLC0415
@@ -44,6 +46,8 @@ class RabbitMQAttendanceReporter(AttendanceReporter):
         self._exchange = exchange
         self._routing_key = routing_key
         self._queue = queue
+        self._dead_letter_exchange = dead_letter_exchange
+        self._dead_letter_queue = dead_letter_queue
         self._retries = max(1, retries)
         self._lock = threading.Lock()
         self._connection: pika.BlockingConnection | None = None
@@ -61,8 +65,32 @@ class RabbitMQAttendanceReporter(AttendanceReporter):
         self._channel.exchange_declare(
             exchange=self._exchange, exchange_type="topic", durable=True
         )
+        # Without confirms, basic_publish only means "handed to the socket": a broker
+        # that dies mid-flush loses the message and reports success. There is no local
+        # outbox to replay from, so the acknowledgement is the only safety net.
+        self._channel.confirm_delivery()
+
+        arguments: dict[str, object] = {}
+        if self._dead_letter_exchange:
+            self._channel.exchange_declare(
+                exchange=self._dead_letter_exchange, exchange_type="topic", durable=True
+            )
+            if self._dead_letter_queue:
+                self._channel.queue_declare(queue=self._dead_letter_queue, durable=True)
+                self._channel.queue_bind(
+                    queue=self._dead_letter_queue,
+                    exchange=self._dead_letter_exchange,
+                    routing_key="#",
+                )
+            arguments["x-dead-letter-exchange"] = self._dead_letter_exchange
+
         if self._queue:
-            self._channel.queue_declare(queue=self._queue, durable=True)
+            # NOTE: an existing queue cannot gain x-dead-letter-exchange by
+            # redeclaration -- the broker answers PRECONDITION_FAILED. A queue created
+            # before this argument existed must be deleted once before first deploy.
+            self._channel.queue_declare(
+                queue=self._queue, durable=True, arguments=arguments or None
+            )
             self._channel.queue_bind(
                 queue=self._queue, exchange=self._exchange, routing_key=self._routing_key
             )

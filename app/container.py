@@ -232,7 +232,12 @@ class Container:
         with self._lock:
             if self._camera_runner is None:
                 self._camera_runner = CameraRunner(
-                    self.settings, self.models, self.gallery_handle, self.frame_hub
+                    self.settings,
+                    self.models,
+                    self.gallery_handle,
+                    self.frame_hub,
+                    reporter=self.attendance_reporter,
+                    suppressor=self.duplicate_suppressor,
                 )
             return self._camera_runner
 

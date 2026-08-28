@@ -67,8 +67,13 @@ class _FakePikaModule:
             self.is_open = False
 
     class _Channel:
+        confirms = False
+
         def __init__(self) -> None:
             self.is_open = True
+
+        def confirm_delivery(self) -> None:
+            self.confirms = True
 
         def exchange_declare(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
             pass

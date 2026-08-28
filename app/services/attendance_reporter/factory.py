@@ -23,5 +23,7 @@ def build_attendance_reporter(settings: Settings) -> AttendanceReporter:
             routing_key=settings.attendance_routing_key,
             queue=settings.attendance_queue,
             retries=settings.attendance_publish_retries,
+            dead_letter_exchange=settings.attendance_dead_letter_exchange,
+            dead_letter_queue=settings.attendance_dead_letter_queue,
         )
     raise ValueError(f"Unknown attendance broker: {settings.attendance_broker}")

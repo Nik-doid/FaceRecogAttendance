@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from app.api.v1.endpoints import websocket as websocket_endpoint
 from app.config.settings import settings
+from app.core.face_processing.attendance_handlers import NullMarkAttendance
 from app.core.face_processing.dispatchers import (
     FaceDetectionDispatcher,
     FaceRecognitionDispatcher,
@@ -124,10 +125,21 @@ def test_recognition_dispatcher_rejects_unknown_recognizer(empty_gallery: Galler
         FaceRecognitionDispatcher.dispatch("nope", empty_gallery, 0.6)
 
 
-def test_step_4_is_not_implemented_yet() -> None:
-    """Pins the stub contract: wiring step 4 must be a deliberate change."""
+def test_attendance_dispatcher_defaults_to_recording_nowhere() -> None:
+    """The safe default: a pipeline with no sink configured cannot punch anyone in."""
+    handler = MarkAttendanceDispatcher.dispatch(AttendanceSinkType.NULL)
+    assert isinstance(handler, NullMarkAttendance)
+
+
+def test_attendance_dispatcher_refuses_a_broker_without_its_dependencies() -> None:
+    """The reporter owns one AMQP connection per process, so it must be injected."""
     with pytest.raises(StepNotImplementedError):
-        MarkAttendanceDispatcher.dispatch(AttendanceSinkType.NULL)
+        MarkAttendanceDispatcher.dispatch(AttendanceSinkType.RABBITMQ)
+
+
+def test_attendance_dispatcher_rejects_an_unknown_sink() -> None:
+    with pytest.raises(StepNotImplementedError):
+        MarkAttendanceDispatcher.dispatch("carrier-pigeon")
 
 
 @needs_model

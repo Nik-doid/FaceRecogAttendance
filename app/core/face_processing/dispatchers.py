@@ -4,9 +4,9 @@ One Factory + Dispatcher pair per step of ``FaceRecognitionProcess``. To swap an
 implementation, add a handler class in the matching ``*_handlers`` module and a branch
 in its factory here; ``process_frames`` does not change.
 
-Steps 1-3 are implemented so far. The remaining factory raises
-``StepNotImplementedError`` rather than returning a half-working handler, so an
-unimplemented step fails loudly at dispatch time instead of silently returning nothing.
+Every step is implemented. A factory still raises ``StepNotImplementedError`` for an
+unknown enum value rather than returning a half-working handler, so a typo fails loudly
+at dispatch time instead of silently recording nothing.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from pathlib import Path
 from app.ai.detector.scrfd import SCRFDDetector
 from app.core.face_processing.attendance_handlers import (
     BaseMarkAttendance,
-    BrokerMarkAttendance,  # noqa: F401 - registered here once implemented
-    NullMarkAttendance,  # noqa: F401 - registered here once implemented
+    BrokerMarkAttendance,
+    NullMarkAttendance,
 )
 from app.core.face_processing.face_detection_handlers import (
     BaseFaceDetection,
@@ -39,6 +39,8 @@ from app.schemas.face_processing import (
     FaceRecognizerType,
     PalmDetectorType,
 )
+from app.services.attendance_reporter.base import AttendanceReporter
+from app.services.duplicate_suppressor import DuplicateSuppressor
 from app.services.face_recognition.exceptions import StepNotImplementedError
 
 
@@ -174,12 +176,22 @@ class FaceRecognitionDispatcher:
 # mark attendance handlers and dispatchers
 class MarkAttendanceHandlerFactory:
     @staticmethod
-    def create_handler(attendance_sink: AttendanceSinkType) -> BaseMarkAttendance:
-        if attendance_sink in (AttendanceSinkType.NULL, AttendanceSinkType.RABBITMQ):
-            raise StepNotImplementedError(
-                f"Attendance sink '{attendance_sink}' is not implemented; when it is, "
-                "delegate to app/services/attendance_reporter/ rather than reimplement it"
-            )
+    def create_handler(
+        attendance_sink: AttendanceSinkType,
+        reporter: AttendanceReporter | None = None,
+        suppressor: DuplicateSuppressor | None = None,
+    ) -> BaseMarkAttendance:
+        if attendance_sink == AttendanceSinkType.NULL:
+            return NullMarkAttendance()
+
+        if attendance_sink == AttendanceSinkType.RABBITMQ:
+            if reporter is None or suppressor is None:
+                raise StepNotImplementedError(
+                    "the rabbitmq sink needs a reporter and a suppressor; they are "
+                    "injected because the reporter owns one AMQP connection per "
+                    "process, while a pipeline is built per consumer"
+                )
+            return BrokerMarkAttendance(reporter, suppressor)
 
         raise StepNotImplementedError(f"Unknown attendance sink: {attendance_sink}")
 
@@ -188,7 +200,20 @@ class MarkAttendanceDispatcher:
     handler = MarkAttendanceHandlerFactory
 
     @classmethod
-    def dispatch(cls, attendance_sink: AttendanceSinkType) -> BaseMarkAttendance:
-        """Dispatch the mark-attendance handler for the given sink type."""
-        attendance_inst = cls.handler.create_handler(attendance_sink)
+    def dispatch(
+        cls,
+        attendance_sink: AttendanceSinkType,
+        reporter: AttendanceReporter | None = None,
+        suppressor: DuplicateSuppressor | None = None,
+    ) -> BaseMarkAttendance:
+        """Dispatch the mark-attendance handler for the given sink type.
+
+        Args:
+            attendance_sink (AttendanceSinkType)
+            reporter (AttendanceReporter | None): required by the rabbitmq sink.
+            suppressor (DuplicateSuppressor | None): per-employee publish rate limit.
+        Returns:
+            BaseMarkAttendance: mark attendance handler instance
+        """
+        attendance_inst = cls.handler.create_handler(attendance_sink, reporter, suppressor)
         return attendance_inst

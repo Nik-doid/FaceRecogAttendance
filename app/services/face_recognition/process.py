@@ -22,6 +22,7 @@ import numpy as np
 from app.core.face_processing.dispatchers import (
     FaceDetectionDispatcher,
     FaceRecognitionDispatcher,
+    MarkAttendanceDispatcher,
     PalmDetectionDispatcher,
 )
 from app.core.face_processing.gallery import Gallery
@@ -36,6 +37,8 @@ from app.schemas.face_processing import (
     FrameResult,
     PalmResult,
 )
+from app.services.attendance_reporter.base import AttendanceReporter
+from app.services.duplicate_suppressor import DuplicateSuppressor
 
 log = get_logger(__name__)
 
@@ -49,6 +52,8 @@ class FaceRecognitionProcess:
         models: Models,
         gallery: Gallery,
         models_dir: Path,
+        reporter: AttendanceReporter | None = None,
+        suppressor: DuplicateSuppressor | None = None,
     ) -> None:
         self.config = config
         self.models_dir = models_dir
@@ -68,6 +73,9 @@ class FaceRecognitionProcess:
         self.face_recognition = FaceRecognitionDispatcher.dispatch(
             config.face_recognizer, gallery, config.recognition_threshold
         )
+        self.mark_attendance = MarkAttendanceDispatcher.dispatch(
+            config.attendance_sink, reporter, suppressor
+        )
 
     async def process_frames(
         self, frame_bgr: np.ndarray, ctx: FrameContext | None = None
@@ -78,7 +86,7 @@ class FaceRecognitionProcess:
             2. looking gate
             3. palm detection
             4. face recognition
-            5. mark attendance     (not implemented)
+            5. mark attendance
 
         Step 2 gates the rest: nobody facing the camera means steps 3-5 never run.
         Face detection is what *decides* step 2, so it is the one step that always
@@ -136,7 +144,11 @@ class FaceRecognitionProcess:
         for index, face in zip(raised, recognized, strict=True):
             faces[index] = face
 
-        # Step 5 lands here. Until then the recognised faces are the whole result.
+        # 5. mark attendance -- only when a context says which camera and when. The
+        # browser-webcam debug route passes none, so it can never punch anyone in.
+        if ctx is not None:
+            await self.mark_attendance.mark([faces[index] for index in raised], ctx)
+
         return FrameResult(palm=frame_palm, faces=faces)
 
     def _with_gaze(self, face: FaceResult) -> FaceResult:
