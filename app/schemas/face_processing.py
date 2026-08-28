@@ -8,6 +8,7 @@ different implementation of a step is a change of enum value, never a change to
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
@@ -68,6 +69,19 @@ class FaceResult(BaseModel):
     # Best cosine similarity found, kept even when it lost to the threshold: an
     # under-threshold near-miss is the useful number when tuning that threshold.
     confidence: float = 0.0
+
+
+class FrameContext(BaseModel):
+    """Per-frame facts the pipeline needs for step 5 but a face does not carry.
+
+    Kept off ``FaceResult`` on purpose: that model is serialised to the browser on
+    every frame, and neither field means anything to the renderer. ``captured_at`` is
+    stamped when the frame is read, not when it is published, so a broker outage
+    cannot move everyone's punch time.
+    """
+
+    camera_id: str
+    captured_at: datetime
 
 
 class FrameResult(BaseModel):

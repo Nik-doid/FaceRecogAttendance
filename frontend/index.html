@@ -21,6 +21,14 @@
   #faces.on.matched { background: #4ade80; color: #052e16; }
   .mode-toggle { padding: 6px 12px; background: #333; border: 1px solid #444; color: #eee; border-radius: 4px; cursor: pointer; }
   .mode-toggle.active { background: #4ade80; color: #052e16; font-weight: 600; }
+  .runner { margin-bottom: 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+            padding: 10px 12px; background: #1a1a1a; border: 1px solid #333; border-radius: 4px; }
+  .runner button { padding: 6px 12px; border-radius: 4px; border: 1px solid #444; cursor: pointer; }
+  #runnerStart { background: #4ade80; color: #052e16; font-weight: 600; }
+  #runnerStop { background: #f87171; color: #450a0a; font-weight: 600; }
+  #token { flex: 1; min-width: 220px; padding: 6px 8px; background: #111; color: #eee;
+           border: 1px solid #444; border-radius: 4px; font-family: monospace; font-size: 12px; }
+  #runnerState { color: #999; font-size: 13px; font-variant-numeric: tabular-nums; }
 </style>
 
 <h1>Camera Stream</h1>
@@ -28,6 +36,12 @@
   <button id="modeToggle" class="mode-toggle active" onclick="toggleMode()">Server Camera (RTSP/Device)</button>
   <button id="webcamToggle" class="mode-toggle" onclick="toggleMode()">Browser Webcam</button>
   <label><input type="checkbox" id="showFps" checked> Show FPS</label>
+</div>
+<div class="runner">
+  <button id="runnerStart" onclick="runnerAction('start')">Start camera</button>
+  <button id="runnerStop" onclick="runnerAction('stop')">Stop camera</button>
+  <input id="token" type="password" placeholder="admin JWT (start/stop only)">
+  <span id="runnerState">runner: unknown</span>
 </div>
 <video id="video" autoplay muted playsinline></video>
 <div class="stage">
@@ -69,6 +83,66 @@ let mode = "server"; // "server" or "webcam"
 let sendInterval = null;
 
 const proto = location.protocol === "https:" ? "wss:" : "ws:";
+
+// --- camera runner control -------------------------------------------------
+// The runner captures and recognises independently of this page; these buttons
+// only start and stop it. Mint a token with:
+//   uv run python -c "from app.core.security import create_access_token as t; print(t('admin'))"
+const tokenEl = document.getElementById("token");
+const runnerStateEl = document.getElementById("runnerState");
+tokenEl.value = localStorage.getItem("adminToken") || "";
+tokenEl.addEventListener("change", () => {
+  localStorage.setItem("adminToken", tokenEl.value.trim());
+});
+
+async function runnerAction(action) {
+  const token = tokenEl.value.trim();
+  if (!token) {
+    runnerStateEl.textContent = "runner: a token is required to " + action;
+    return;
+  }
+  runnerStateEl.textContent = `runner: ${action}ing...`;
+  try {
+    const response = await fetch(`/api/v1/camera/${action}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      runnerStateEl.textContent = `runner: ${action} failed (${response.status}) ` +
+        (body.detail || "");
+      return;
+    }
+    await refreshRunner();
+  } catch (err) {
+    runnerStateEl.textContent = `runner: ${action} failed (${err.message})`;
+  }
+}
+
+async function refreshRunner() {
+  try {
+    const response = await fetch("/api/v1/camera/status");
+    const body = await response.json();
+    const camera = body.camera || {};
+    const gallery = body.gallery || {};
+    const bits = [
+      `runner: ${body.status}`,
+      camera.connected ? "camera connected" : "camera disconnected",
+      `${camera.frames || 0} frames`,
+      `${camera.scans || 0} scans`,
+      gallery.ready
+        ? `gallery ${gallery.employees} employees`
+        : "gallery building",
+    ];
+    if (camera.last_error) bits.push(`last error: ${camera.last_error}`);
+    runnerStateEl.textContent = bits.join(" · ");
+  } catch {
+    runnerStateEl.textContent = "runner: status unavailable";
+  }
+}
+
+refreshRunner();
+setInterval(refreshRunner, 2000);
 
 function clearOverlay() {
   octx.clearRect(0, 0, overlay.width, overlay.height);

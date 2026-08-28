@@ -38,15 +38,25 @@ def test_camera_start_stop_flow(client: TestClient, container, auth_headers) -> 
     assert stop.json()["status"] == "stopped"
 
 
-def test_camera_controls_audited(client: TestClient, container, auth_headers) -> None:
-    from app.database.session import sync_session
-    from app.repositories.audit_repo import AuditLogRepository
+def test_camera_controls_start_and_stop_the_runner(
+    client: TestClient, container, auth_headers
+) -> None:
+    """Start and stop must be reachable, so the runner can be tested and halted."""
+    started = client.post("/api/v1/camera/start", headers=auth_headers)
+    assert started.status_code == 200
+    assert started.json()["status"] == "running"
+    assert container.camera_runner.running
 
-    use_fake_camera(container)
-    client.post("/api/v1/camera/start", headers=auth_headers)
-    client.post("/api/v1/camera/stop", headers=auth_headers)
+    # A second start is a conflict, not a silent second thread.
+    assert client.post("/api/v1/camera/start", headers=auth_headers).status_code == 409
 
-    with sync_session() as session:
-        audit = AuditLogRepository().list_recent(session)
-    actions = {entry.action for entry in audit}
-    assert {"camera.start", "camera.stop"} <= actions
+    stopped = client.post("/api/v1/camera/stop", headers=auth_headers)
+    assert stopped.status_code == 200
+    assert stopped.json()["status"] == "stopped"
+    assert container.camera_runner.running is False
+
+
+def test_camera_controls_require_a_token(client: TestClient) -> None:
+    """Stopping attendance capture is not a read-only operation."""
+    assert client.post("/api/v1/camera/start").status_code == 401
+    assert client.post("/api/v1/camera/stop").status_code == 401

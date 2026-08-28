@@ -32,6 +32,7 @@ from app.runtime import Models
 from app.schemas.face_processing import (
     FaceProcessConfig,
     FaceResult,
+    FrameContext,
     FrameResult,
     PalmResult,
 )
@@ -68,7 +69,9 @@ class FaceRecognitionProcess:
             config.face_recognizer, gallery, config.recognition_threshold
         )
 
-    async def process_frames(self, frame_bgr: np.ndarray) -> FrameResult:
+    async def process_frames(
+        self, frame_bgr: np.ndarray, ctx: FrameContext | None = None
+    ) -> FrameResult:
         """
         process each webcam frame into the following steps:
             1. face detection
@@ -88,6 +91,10 @@ class FaceRecognitionProcess:
 
         Args:
             frame_bgr (np.ndarray): one decoded BGR frame.
+            ctx (FrameContext | None): camera and capture time. Step 5 needs both and
+                a face carries neither. None means "do not record attendance" -- the
+                browser-webcam debug route passes nothing, so nobody can punch a
+                colleague in by holding a palm up to a laptop.
         """
         # 1. face detection
         faces = await self.face_detection.detect(frame_bgr)

@@ -13,6 +13,8 @@ from app.ai.components import AIComponents, load_ai_components
 from app.ai.faiss.index import FaceIndex
 from app.ai.tracker.base import Tracker
 from app.ai.tracker.bytetrack import ByteTrackTracker
+from app.camera.hub import FrameHub
+from app.camera.runner import CameraRunner
 from app.config.settings import Settings
 from app.core.face_processing.gallery import (
     Gallery,
@@ -61,6 +63,8 @@ class Container:
         self._lock = threading.RLock()
         self._models: Models | None = None
         self.gallery_handle = GalleryHandle()
+        self.frame_hub = FrameHub()
+        self._camera_runner: CameraRunner | None = None
 
         # Shared singletons.
         self.face_index = FaceIndex(dim=EMBEDDING_DIM)
@@ -222,8 +226,20 @@ class Container:
 
         threading.Thread(target=run, name="gallery-build", daemon=True).start()
 
+    @property
+    def camera_runner(self) -> CameraRunner:
+        """The always-on capture loop. Built on first use, since it needs the models."""
+        with self._lock:
+            if self._camera_runner is None:
+                self._camera_runner = CameraRunner(
+                    self.settings, self.models, self.gallery_handle, self.frame_hub
+                )
+            return self._camera_runner
+
     def shutdown(self) -> None:
         with self._lock:
+            if self._camera_runner is not None:
+                self._camera_runner.stop()
             if self.erp_sync_scheduler is not None:
                 self.erp_sync_scheduler.stop()
             try:

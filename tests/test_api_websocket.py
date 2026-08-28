@@ -253,56 +253,51 @@ def test_palm_debounce_resets_pending_on_disagreement() -> None:
 # --- the camera socket ------------------------------------------------------
 
 
-class _FakeReader:
-    """Stands in for CameraReader: always open, endless blank frames."""
-
-    def __init__(self, *, opens: bool = True) -> None:
-        self._opens = opens
-        self.closed = False
-
-    def open(self) -> bool:
-        return self._opens
-
-    def read(self) -> np.ndarray:
-        return np.zeros((120, 160, 3), np.uint8)
-
-    def close(self) -> None:
-        self.closed = True
-
-
-@needs_model
-def test_camera_ws_reports_a_camera_it_cannot_open(client: TestClient, monkeypatch) -> None:
-    monkeypatch.setattr(
-        websocket_endpoint, "_create_camera_reader", lambda _s: _FakeReader(opens=False)
-    )
+def test_camera_ws_says_so_when_the_runner_is_stopped(client: TestClient) -> None:
+    """The socket owns no camera now, so a stopped runner is a message, not a failure."""
     with client.websocket_connect("/api/v1/camera/ws") as ws:
         assert "error" in ws.receive_json()
 
 
-@needs_model
-def test_camera_ws_streams_frames_and_detection_results(
-    client: TestClient, monkeypatch
+def test_camera_ws_forwards_whatever_the_runner_published(
+    client: TestClient, container
 ) -> None:
-    """The RTSP socket must emit both video and pipeline output, not just video."""
-    monkeypatch.setattr(websocket_endpoint, "_create_camera_reader", lambda _s: _FakeReader())
+    """A viewer reads the hub; nothing about the connection drives capture."""
+    payload = {
+        "palm": True,
+        "score": 0.9,
+        "width": 160,
+        "height": 120,
+        "faces": [],
+    }
+    container.frame_hub.publish_frame(_jpeg())
+    container.frame_hub.publish_detection(payload)
 
-    frames = 0
-    detection = None
+    frames, detection = 0, None
     with client.websocket_connect("/api/v1/camera/ws") as ws:
-        for _ in range(40):
+        for _ in range(10):
             message = ws.receive()
             if message.get("bytes"):
                 frames += 1
             elif message.get("text"):
-                detection = json.loads(message["text"])
+                body = json.loads(message["text"])
+                if "error" in body:
+                    continue
+                detection = body
                 break
 
-    assert frames > 0, "no video frames streamed"
-    assert detection is not None, "detection result never arrived"
-    # A blank frame has no palm, so the pipeline stops at step 1 and reports no faces.
-    assert detection["palm"] is False
-    assert detection["faces"] == []
-    assert (detection["width"], detection["height"]) == (160, 120)
+    assert frames > 0, "the held frame was never forwarded"
+    assert detection == payload
+
+
+def test_camera_ws_sends_each_frame_once(client: TestClient, container) -> None:
+    """Polling is by sequence number, so a viewer must not re-send a stale frame."""
+    container.frame_hub.publish_frame(_jpeg())
+    with client.websocket_connect("/api/v1/camera/ws") as ws:
+        ws.receive()  # the stopped-runner notice
+        assert ws.receive().get("bytes") is not None
+        container.frame_hub.publish_frame(_jpeg(32, 32))
+        assert ws.receive().get("bytes") is not None
 
 
 # --- the looking gate -------------------------------------------------------

@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # 10 is a scan every ~330ms, which leaves a real gap either side of a
     # PALM_SCAN_GRID=2 scan instead of pegging a core continuously.
     camera_detect_every: int = 10
+    # The camera runner is time-driven, not frame-counted: counting frames at 30fps
+    # implies "scan every 330ms" while a frame reaching recognition costs over a
+    # second. Start a scan at most this often, and never while one is in flight.
+    camera_scan_interval_ms: int = 1000
 
     # --- Palm detection (the /webcam/ws and /camera/ws pipeline) --------------
     palm_score_threshold: float = 0.50
