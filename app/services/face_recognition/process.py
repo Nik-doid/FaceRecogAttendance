@@ -15,7 +15,6 @@ to swap, so it lives as a plain function in ``app/core/face_processing/gaze.py``
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -25,9 +24,11 @@ from app.core.face_processing.dispatchers import (
     FaceRecognitionDispatcher,
     PalmDetectionDispatcher,
 )
+from app.core.face_processing.gallery import Gallery
 from app.core.face_processing.gaze import estimate_gaze
 from app.core.face_processing.palm_detection_handlers import palm_search_box
 from app.core.logging import get_logger
+from app.runtime import Models
 from app.schemas.face_processing import (
     FaceProcessConfig,
     FaceResult,
@@ -44,13 +45,15 @@ class FaceRecognitionProcess:
     def __init__(
         self,
         config: FaceProcessConfig,
+        models: Models,
+        gallery: Gallery,
         models_dir: Path,
-        photo_sources: Sequence[str | Path] = (),
     ) -> None:
         self.config = config
         self.models_dir = models_dir
-        self.photo_sources = photo_sources
 
+        # Palm is the one step that still builds its own net: cv2.dnn is not
+        # thread-safe, so it must stay private to this process instance.
         self.palm_detection = PalmDetectionDispatcher.dispatch(
             config.palm_detector,
             models_dir,
@@ -59,15 +62,10 @@ class FaceRecognitionProcess:
             config.palm_scan_overlap,
         )
         self.face_detection = FaceDetectionDispatcher.dispatch(
-            config.face_detector,
-            models_dir,
-            config.face_score_threshold,
+            config.face_detector, models.detector
         )
         self.face_recognition = FaceRecognitionDispatcher.dispatch(
-            config.face_recognizer,
-            models_dir,
-            photo_sources,
-            config.recognition_threshold,
+            config.face_recognizer, gallery, config.recognition_threshold
         )
 
     async def process_frames(self, frame_bgr: np.ndarray) -> FrameResult:

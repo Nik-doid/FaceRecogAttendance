@@ -6,12 +6,15 @@ the pipeline-local equivalent with no database attached -- it walks
 ``EMPLOYEE_PHOTOS_SOURCE`` straight into an in-memory :class:`FaceIndex`, which is what
 lets the webcam route recognise faces without a DB session in the request path.
 
-Built once per (models_dir, sources) and cached for the process: enrolment costs one
-SCRFD pass plus one ArcFace pass per photo, far too slow to repeat per WebSocket
-connection. Sharing across connections is safe because both models here are
-onnxruntime sessions -- whose ``Run`` is thread-safe -- and :class:`FaceIndex` guards
-itself with an RLock. The ``cv2.dnn`` palm net has neither guarantee, which is why that
-one stays per-connection.
+Built once per (models, sources) and cached for the process: enrolment costs one SCRFD
+pass plus one ArcFace pass per photo, far too slow to repeat per WebSocket connection.
+Sharing across connections is safe because both models are onnxruntime sessions --
+whose ``Run`` is thread-safe -- and :class:`FaceIndex` guards itself with an RLock. The
+``cv2.dnn`` palm net has neither guarantee, which is why that one stays per-connection.
+
+The sessions arrive already loaded, from :mod:`app.runtime`. Building them here would
+mean a second SCRFD and a second 174 MiB ArcFace alongside the ones the process already
+has.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from app.ai.detector.scrfd import SCRFDDetector
 from app.ai.faiss.index import FaceIndex, IndexItem
 from app.ai.recognizer.arcface import ArcFaceRecognizer
 from app.core.logging import get_logger
+from app.runtime import Models
 
 log = get_logger(__name__)
 
@@ -43,7 +47,8 @@ class Gallery:
     """A searchable set of enrolled employees plus the recognizer that embedded them.
 
     ``recognizer`` is None when nothing was enrolled: an empty index can never match,
-    so loading the 174 MiB ArcFace model to embed probes against it is pure waste.
+    so there is no point handing a probe embedder to a caller that cannot use it.
+    ``ArcFaceRecognition._match`` already returns the face untouched in that case.
     """
 
     index: FaceIndex
@@ -52,21 +57,22 @@ class Gallery:
     photos: int
 
 
-_cache: dict[tuple[str, tuple[str, ...]], Gallery] = {}
+_cache: dict[tuple[int, tuple[str, ...]], Gallery] = {}
 _lock = threading.Lock()
 
 
-def load_gallery(models_dir: str | Path, sources: Sequence[str | Path]) -> Gallery:
+def load_gallery(models: Models, sources: Sequence[str | Path]) -> Gallery:
     """Return the cached gallery for these sources, building it on first use.
 
     The lock is held across the build so two connections opening at once enrol once
-    rather than twice.
+    rather than twice. Keyed on the identity of the shared ``Models`` bundle, so a
+    process with one bundle -- the normal case -- has exactly one gallery.
     """
-    key = (str(models_dir), tuple(str(source) for source in sources))
+    key = (id(models), tuple(str(source) for source in sources))
     with _lock:
         cached = _cache.get(key)
         if cached is None:
-            cached = _build(models_dir, sources)
+            cached = _build(models, sources)
             _cache[key] = cached
         return cached
 
@@ -88,16 +94,15 @@ def _iter_photos(sources: Sequence[str | Path]) -> Iterator[tuple[Path, str]]:
                 yield photo, employee_dir.name
 
 
-def _build(models_dir: str | Path, sources: Sequence[str | Path]) -> Gallery:
+def _build(models: Models, sources: Sequence[str | Path]) -> Gallery:
     photos = list(_iter_photos(sources))
     index = FaceIndex(dim=EMBEDDING_DIM)
     if not photos:
         log.warning("recognition gallery is empty", extra={"sources": [str(s) for s in sources]})
         return Gallery(index=index, recognizer=None, employees=0, photos=0)
 
-    recognizer = ArcFaceRecognizer(models_dir=str(models_dir))
-    # Enrolment-only detector; dropped on return so its session is not kept alive.
-    detector = SCRFDDetector(models_dir=str(models_dir))
+    recognizer = models.recognizer
+    detector = models.detector
     items: list[IndexItem] = []
     codes: set[str] = set()
     for photo, code in photos:

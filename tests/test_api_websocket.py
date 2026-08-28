@@ -21,12 +21,14 @@ from app.core.face_processing.dispatchers import (
 )
 from app.core.face_processing.face_detection_handlers import ScrfdFaceDetection
 from app.core.face_processing.face_recognition_handlers import ArcFaceRecognition
+from app.core.face_processing.gallery import Gallery, load_gallery
 from app.core.face_processing.gaze import estimate_gaze
 from app.core.face_processing.palm_detection_handlers import (
     BlazePalmDetection,
     palm_search_box,
     scan_regions,
 )
+from app.runtime import Models, load_models
 from app.schemas.face_processing import (
     AttendanceSinkType,
     FaceDetectorType,
@@ -47,6 +49,22 @@ needs_model = pytest.mark.skipif(
 )
 
 PHOTO_SOURCES = settings.employee_photos_source
+
+
+@pytest.fixture(scope="module")
+def models() -> Models:
+    """One SCRFD + one ArcFace for the whole module; loading them costs seconds."""
+    return load_models(settings)
+
+
+@pytest.fixture(scope="module")
+def enrolled(models: Models) -> Gallery:
+    return load_gallery(models, PHOTO_SOURCES)
+
+
+@pytest.fixture(scope="module")
+def empty_gallery(models: Models, tmp_path_factory: pytest.TempPathFactory) -> Gallery:
+    return load_gallery(models, [tmp_path_factory.mktemp("no-photos")])
 needs_photos = pytest.mark.skipif(
     not any(Path(root).is_dir() and any(Path(root).iterdir()) for root in PHOTO_SOURCES),
     reason="no enrolment photos under EMPLOYEE_PHOTOS_SOURCE",
@@ -88,29 +106,27 @@ def test_palm_dispatcher_rejects_unimplemented(detector: PalmDetectorType) -> No
 
 
 @needs_model
-def test_face_dispatcher_returns_scrfd() -> None:
-    handler = FaceDetectionDispatcher.dispatch(
-        FaceDetectorType.SCRFD, settings.models_dir, 0.5
-    )
+def test_face_dispatcher_returns_scrfd(models: Models) -> None:
+    handler = FaceDetectionDispatcher.dispatch(FaceDetectorType.SCRFD, models.detector)
     assert isinstance(handler, ScrfdFaceDetection)
 
 
-def test_face_dispatcher_rejects_unknown_detector() -> None:
+def test_face_dispatcher_rejects_unknown_detector(models: Models) -> None:
     with pytest.raises(StepNotImplementedError):
-        FaceDetectionDispatcher.dispatch("nope", settings.models_dir, 0.5)
+        FaceDetectionDispatcher.dispatch("nope", models.detector)
 
 
 @needs_model
-def test_recognition_dispatcher_returns_arcface() -> None:
+def test_recognition_dispatcher_returns_arcface(empty_gallery: Gallery) -> None:
     handler = FaceRecognitionDispatcher.dispatch(
-        FaceRecognizerType.ARCFACE, settings.models_dir, (), 0.6
+        FaceRecognizerType.ARCFACE, empty_gallery, 0.6
     )
     assert isinstance(handler, ArcFaceRecognition)
 
 
-def test_recognition_dispatcher_rejects_unknown_recognizer() -> None:
+def test_recognition_dispatcher_rejects_unknown_recognizer(empty_gallery: Gallery) -> None:
     with pytest.raises(StepNotImplementedError):
-        FaceRecognitionDispatcher.dispatch("nope", settings.models_dir, (), 0.6)
+        FaceRecognitionDispatcher.dispatch("nope", empty_gallery, 0.6)
 
 
 def test_step_4_is_not_implemented_yet() -> None:
@@ -120,23 +136,29 @@ def test_step_4_is_not_implemented_yet() -> None:
 
 
 @needs_model
-async def test_process_frames_finds_no_palm_in_a_blank_frame() -> None:
-    process = FaceRecognitionProcess(FaceProcessConfig(), settings.models_dir)
+async def test_process_frames_finds_no_palm_in_a_blank_frame(
+    models: Models, empty_gallery: Gallery
+) -> None:
+    process = FaceRecognitionProcess(
+        FaceProcessConfig(), models, empty_gallery, settings.models_dir
+    )
     result = await process.process_frames(np.zeros((240, 320, 3), np.uint8))
     assert result.palm.detected is False
     assert result.faces == []
 
 
 @needs_model
-async def test_face_detection_finds_no_face_in_a_blank_frame() -> None:
+async def test_face_detection_finds_no_face_in_a_blank_frame(models: Models) -> None:
     """Step 2 in isolation: a blank frame has no face even though step 1 gates it."""
-    handler = ScrfdFaceDetection(models_dir=settings.models_dir)
+    handler = ScrfdFaceDetection(models.detector)
     assert await handler.detect(np.zeros((240, 320, 3), np.uint8)) == []
 
 
 @needs_model
-async def test_recognition_leaves_faces_unmatched_against_an_empty_gallery() -> None:
-    handler = ArcFaceRecognition(models_dir=settings.models_dir, photo_sources=())
+async def test_recognition_leaves_faces_unmatched_against_an_empty_gallery(
+    empty_gallery: Gallery,
+) -> None:
+    handler = ArcFaceRecognition(empty_gallery)
     face = FaceResult(bbox=(0.0, 0.0, 10.0, 10.0), score=0.9, kps=[(1.0, 1.0)] * 5)
     (matched,) = await handler.recognize(np.zeros((240, 320, 3), np.uint8), [face])
     assert matched.employee_code is None
@@ -145,7 +167,9 @@ async def test_recognition_leaves_faces_unmatched_against_an_empty_gallery() -> 
 
 @needs_model
 @needs_photos
-async def test_recognition_matches_an_enrolled_photo_to_its_own_code() -> None:
+async def test_recognition_matches_an_enrolled_photo_to_its_own_code(
+    models: Models, enrolled: Gallery
+) -> None:
     """End-to-end steps 2+3: an enrolment photo must recognise as its own employee.
 
     This is the weakest possible identity claim (the probe *is* a gallery image), which
@@ -153,20 +177,18 @@ async def test_recognition_matches_an_enrolled_photo_to_its_own_code() -> None:
     ArcFace, embeddings reaching the index, codes coming back out -- rather than for
     model accuracy.
     """
-    enrolled = sorted(
+    photos = sorted(
         photo
         for root in PHOTO_SOURCES
         for employee_dir in sorted(p for p in Path(root).iterdir() if p.is_dir())
         for photo in sorted(employee_dir.glob("*.jpg"))
     )
-    assert enrolled, "expected at least one enrolment photo"
-    probe = enrolled[0]
+    assert photos, "expected at least one enrolment photo"
+    probe = photos[0]
     expected_code = probe.parent.name
 
-    detect = ScrfdFaceDetection(models_dir=settings.models_dir)
-    recognize = ArcFaceRecognition(
-        models_dir=settings.models_dir, photo_sources=PHOTO_SOURCES
-    )
+    detect = ScrfdFaceDetection(models.detector)
+    recognize = ArcFaceRecognition(enrolled)
     image = cv2.imread(str(probe))
     faces = await recognize.recognize(image, await detect.detect(image))
 
@@ -379,7 +401,9 @@ def test_palm_search_box_beats_the_full_frame_for_a_distant_face() -> None:
 
 @needs_model
 @needs_photos
-async def test_pipeline_stops_at_face_detection_when_nobody_is_looking() -> None:
+async def test_pipeline_stops_at_face_detection_when_nobody_is_looking(
+    models: Models, enrolled: Gallery
+) -> None:
     """A turned head must cost one SCRFD pass and nothing else.
 
     ``attendance_EMP1_20260824`` is a real capture of a head turned away; it measures
@@ -390,7 +414,7 @@ async def test_pipeline_stops_at_face_detection_when_nobody_is_looking() -> None
         pytest.skip("turned-head fixture absent")
 
     process = FaceRecognitionProcess(
-        FaceProcessConfig(), settings.models_dir, PHOTO_SOURCES
+        FaceProcessConfig(), models, enrolled, settings.models_dir
     )
     result = await process.process_frames(cv2.imread(str(turned)))
 
@@ -404,13 +428,15 @@ async def test_pipeline_stops_at_face_detection_when_nobody_is_looking() -> None
 
 @needs_model
 @needs_photos
-async def test_pipeline_recognises_a_looking_face_that_shows_a_palm() -> None:
+async def test_pipeline_recognises_a_looking_face_that_shows_a_palm(
+    models: Models, enrolled: Gallery
+) -> None:
     engaged = Path("storage/snapshots/attendance_EMP1_20260820_064045_346582.jpg")
     if not engaged.is_file():
         pytest.skip("engaged-capture fixture absent")
 
     process = FaceRecognitionProcess(
-        FaceProcessConfig(), settings.models_dir, PHOTO_SOURCES
+        FaceProcessConfig(), models, enrolled, settings.models_dir
     )
     result = await process.process_frames(cv2.imread(str(engaged)))
 
@@ -443,7 +469,9 @@ async def test_palm_detect_skips_degenerate_regions() -> None:
 
 @needs_model
 @needs_photos
-async def test_only_the_person_who_raised_a_hand_is_identified() -> None:
+async def test_only_the_person_who_raised_a_hand_is_identified(
+    models: Models, enrolled: Gallery
+) -> None:
     """Two colleagues, one hand: the bystander is seen but never identified.
 
     ``attendance_EMP4_20260821`` is a real two-person capture. Both faces are looking,
@@ -454,7 +482,7 @@ async def test_only_the_person_who_raised_a_hand_is_identified() -> None:
         pytest.skip("two-person fixture absent")
 
     process = FaceRecognitionProcess(
-        FaceProcessConfig(), settings.models_dir, PHOTO_SOURCES
+        FaceProcessConfig(), models, enrolled, settings.models_dir
     )
     result = await process.process_frames(cv2.imread(str(two_people)))
 

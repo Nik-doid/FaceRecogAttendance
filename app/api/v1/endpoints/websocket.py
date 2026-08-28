@@ -21,7 +21,8 @@ import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.api.deps import ContainerDep
-from app.config.settings import Settings, settings
+from app.config.settings import Settings
+from app.container import Container
 from app.core.logging import get_logger
 from app.schemas.face_processing import FaceProcessConfig, FrameResult
 from app.services.face_recognition.process import FaceRecognitionProcess
@@ -96,17 +97,18 @@ def _create_camera_reader(settings: Settings) -> CameraReader:
 
 
 def _create_process(
-    settings: Settings, config: FaceProcessConfig
+    container: Container, config: FaceProcessConfig
 ) -> FaceRecognitionProcess:
-    # Per-connection: the process owns a cv2.dnn net that must not be shared. The
-    # recognition gallery behind it is process-wide and cached (see gallery.py).
+    # Per-connection, because the process owns a cv2.dnn palm net that must not be
+    # shared. The SCRFD/ArcFace sessions and the gallery behind it are process-wide
+    # and injected, so a new connection no longer reloads 174 MiB of ArcFace.
     return FaceRecognitionProcess(
-        config, settings.models_dir, settings.employee_photos_source
+        config, container.models, container.gallery, container.settings.models_dir
     )
 
 
 @router.websocket("/webcam/ws")
-async def webcam_ws(websocket: WebSocket) -> None:
+async def webcam_ws(websocket: WebSocket, container: ContainerDep) -> None:
     """Echo the client's webcam frames back, with palm state and face boxes alongside.
 
     One JSON message per *detected* frame (every ``DETECT_EVERY`` frames), so the page
@@ -114,9 +116,10 @@ async def webcam_ws(websocket: WebSocket) -> None:
     boxes are whatever the latest detection found.
     """
     await websocket.accept()
+    settings: Settings = container.settings
     # Whole-frame palm scan: a hand held up to a laptop already fills enough of it.
     process = _create_process(
-        settings,
+        container,
         FaceProcessConfig(
             palm_score_threshold=settings.palm_score_threshold,
             looking_max_yaw_ratio=settings.looking_max_yaw_ratio,
@@ -192,7 +195,7 @@ async def camera_ws(websocket: WebSocket, container: ContainerDep) -> None:
         return
 
     process = _create_process(
-        settings,
+        container,
         FaceProcessConfig(
             palm_score_threshold=settings.palm_score_threshold,
             # Only reached if the grid scan is needed, i.e. a face with no landmarks

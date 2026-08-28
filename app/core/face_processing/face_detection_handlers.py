@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
-from pathlib import Path
 
 import numpy as np
 
@@ -39,22 +38,8 @@ class ScrfdFaceDetection(BaseFaceDetection):
     on the result: step 3 needs them to align the crop before embedding.
     """
 
-    def __init__(
-        self,
-        *,
-        models_dir: str | Path = "models",
-        model_name: str = "det_10g.onnx",
-        score_threshold: float = 0.5,
-        input_size: int = SCRFD_INPUT_SIZE,
-        max_faces: int = SCRFD_MAX_FACES,
-    ) -> None:
-        self._detector = SCRFDDetector(
-            model_name=model_name,
-            input_size=input_size,
-            max_num=max_faces,
-            det_thresh=score_threshold,
-            models_dir=str(models_dir),
-        )
+    def __init__(self, detector: SCRFDDetector) -> None:
+        self._detector = detector
 
     async def detect(self, frame_bgr: np.ndarray) -> list[FaceResult]:
         # The ONNX session is blocking; keep it off the event loop like BlazePalm.

@@ -11,9 +11,9 @@ unimplemented step fails loudly at dispatch time instead of silently returning n
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
 
+from app.ai.detector.scrfd import SCRFDDetector
 from app.core.face_processing.attendance_handlers import (
     BaseMarkAttendance,
     BrokerMarkAttendance,  # noqa: F401 - registered here once implemented
@@ -27,6 +27,7 @@ from app.core.face_processing.face_recognition_handlers import (
     ArcFaceRecognition,
     BaseFaceRecognition,
 )
+from app.core.face_processing.gallery import Gallery
 from app.core.face_processing.palm_detection_handlers import (
     BasePalmDetection,
     BlazePalmDetection,
@@ -102,14 +103,10 @@ class FaceDetectionHandlerFactory:
     @staticmethod
     def create_handler(
         face_detector: FaceDetectorType,
-        models_dir: Path,
-        score_threshold: float,
+        detector: SCRFDDetector,
     ) -> BaseFaceDetection:
         if face_detector == FaceDetectorType.SCRFD:
-            return ScrfdFaceDetection(
-                models_dir=models_dir,
-                score_threshold=score_threshold,
-            )
+            return ScrfdFaceDetection(detector)
 
         raise StepNotImplementedError(f"Unknown face detector: {face_detector}")
 
@@ -121,19 +118,19 @@ class FaceDetectionDispatcher:
     def dispatch(
         cls,
         face_detector: FaceDetectorType,
-        models_dir: Path,
-        score_threshold: float,
+        detector: SCRFDDetector,
     ) -> BaseFaceDetection:
         """Dispatch the face detection handler for the given detector type.
 
         Args:
             face_detector (FaceDetectorType)
-            models_dir (Path): where the model file lives.
-            score_threshold (float): minimum confidence to keep a detection.
+            detector (SCRFDDetector): the already-loaded session from app.runtime.
+                The detection threshold is a property of that session, set when it
+                was built, so it is no longer passed here.
         Returns:
             BaseFaceDetection: face detection handler instance
         """
-        face_inst = cls.handler.create_handler(face_detector, models_dir, score_threshold)
+        face_inst = cls.handler.create_handler(face_detector, detector)
         return face_inst
 
 
@@ -142,16 +139,11 @@ class FaceRecognitionHandlerFactory:
     @staticmethod
     def create_handler(
         face_recognizer: FaceRecognizerType,
-        models_dir: Path,
-        photo_sources: Sequence[str | Path],
+        gallery: Gallery,
         score_threshold: float,
     ) -> BaseFaceRecognition:
         if face_recognizer == FaceRecognizerType.ARCFACE:
-            return ArcFaceRecognition(
-                models_dir=models_dir,
-                photo_sources=photo_sources,
-                score_threshold=score_threshold,
-            )
+            return ArcFaceRecognition(gallery, score_threshold)
 
         raise StepNotImplementedError(f"Unknown face recognizer: {face_recognizer}")
 
@@ -163,24 +155,19 @@ class FaceRecognitionDispatcher:
     def dispatch(
         cls,
         face_recognizer: FaceRecognizerType,
-        models_dir: Path,
-        photo_sources: Sequence[str | Path],
+        gallery: Gallery,
         score_threshold: float,
     ) -> BaseFaceRecognition:
         """Dispatch the face recognition handler for the given recognizer type.
 
         Args:
             face_recognizer (FaceRecognizerType)
-            models_dir (Path): where the model file lives.
-            photo_sources (Sequence[str | Path]): enrolment roots, one subdirectory
-                per employee_code.
+            gallery (Gallery): the enrolled employees, already embedded.
             score_threshold (float): minimum cosine similarity to accept a match.
         Returns:
             BaseFaceRecognition: face recognition handler instance
         """
-        recognize_inst = cls.handler.create_handler(
-            face_recognizer, models_dir, photo_sources, score_threshold
-        )
+        recognize_inst = cls.handler.create_handler(face_recognizer, gallery, score_threshold)
         return recognize_inst
 
 

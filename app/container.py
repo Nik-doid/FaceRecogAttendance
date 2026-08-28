@@ -14,6 +14,7 @@ from app.ai.faiss.index import FaceIndex
 from app.ai.tracker.base import Tracker
 from app.ai.tracker.bytetrack import ByteTrackTracker
 from app.config.settings import Settings
+from app.core.face_processing.gallery import Gallery, load_gallery
 from app.core.logging import get_logger
 from app.database.session import sync_session
 from app.repositories.audit_repo import AuditLogRepository
@@ -22,6 +23,7 @@ from app.repositories.face_embedding_repo import FaceEmbeddingRepository
 from app.repositories.recognition_log_repo import RecognitionLogRepository
 from app.repositories.setting_repo import SettingRepository
 from app.repositories.unknown_face_repo import UnknownFaceRepository
+from app.runtime import Models, load_models
 from app.services.attendance_reporter import build_attendance_reporter
 from app.services.attendance_reporter.base import AttendanceReporter
 from app.services.camera_service import CameraService
@@ -48,7 +50,11 @@ class Container:
     ) -> None:
         self.settings = settings or Settings()
         self._log = get_logger(__name__)
-        self._lock = threading.Lock()
+        # Reentrant: the ``gallery`` property builds under the lock and reaches
+        # through ``models``, which takes it again.
+        self._lock = threading.RLock()
+        self._models: Models | None = None
+        self._gallery: Gallery | None = None
 
         # Shared singletons.
         self.face_index = FaceIndex(dim=EMBEDDING_DIM)
@@ -153,6 +159,28 @@ class Container:
             return False
         self.erp_sync_scheduler.start()
         return True
+
+    @property
+    def models(self) -> Models:
+        """The process-wide SCRFD + ArcFace sessions, built on first use.
+
+        Lazy rather than eager so a control-plane-only test can construct a Container
+        without paying a 174 MiB model load it will never use.
+        """
+        with self._lock:
+            if self._models is None:
+                self._models = load_models(self.settings)
+            return self._models
+
+    @property
+    def gallery(self) -> Gallery:
+        """The enrolled employees. Built once, from the shared sessions above."""
+        with self._lock:
+            if self._gallery is None:
+                self._gallery = load_gallery(
+                    self.models, self.settings.employee_photos_source
+                )
+            return self._gallery
 
     def shutdown(self) -> None:
         with self._lock:

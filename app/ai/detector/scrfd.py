@@ -40,6 +40,11 @@ class SCRFDDetector(Detector):
         self._max_num = max_num
         self._det_thresh = det_thresh
 
+    @property
+    def providers(self) -> list[str]:
+        """Execution providers onnxruntime actually resolved for this session."""
+        return list(self._model.session.get_providers())
+
     def detect(self, image_bgr: np.ndarray) -> list[DetectedFace]:
         try:
             bboxes, kpss = self._model.detect(

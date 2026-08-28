@@ -8,12 +8,10 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
-from pathlib import Path
 
 import numpy as np
 
-from app.core.face_processing.gallery import load_gallery
+from app.core.face_processing.gallery import Gallery
 from app.schemas.face_processing import FaceResult
 
 
@@ -35,14 +33,8 @@ class ArcFaceRecognition(BaseFaceRecognition):
     ``score_threshold`` keep their score but get no ``employee_code``.
     """
 
-    def __init__(
-        self,
-        *,
-        models_dir: str | Path = "models",
-        photo_sources: Sequence[str | Path] = (),
-        score_threshold: float = 0.6,
-    ) -> None:
-        self._gallery = load_gallery(models_dir, photo_sources)
+    def __init__(self, gallery: Gallery, score_threshold: float = 0.6) -> None:
+        self._gallery = gallery
         self._score_threshold = score_threshold
 
     @property

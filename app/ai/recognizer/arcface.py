@@ -34,6 +34,11 @@ class ArcFaceRecognizer(Recognizer):
         self._image_size = image_size
         self._face_align = insightface.utils.face_align
 
+    @property
+    def providers(self) -> list[str]:
+        """Execution providers onnxruntime actually resolved for this session."""
+        return list(self._model.session.get_providers())
+
     def embed(self, image_bgr: np.ndarray, kps: np.ndarray) -> np.ndarray:
         aimg = self._face_align.norm_crop(image_bgr, landmark=kps, image_size=self._image_size)
         feat = self._model.get_feat(aimg)
