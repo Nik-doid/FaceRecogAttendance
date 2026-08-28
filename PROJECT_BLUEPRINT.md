@@ -63,9 +63,9 @@ device_id, branch_id, created_by, created_date, log_date_only`. `employee_code` 
 resolved to `attendance_id_no` through `ct_hr_employee_master` (table and columns are
 configurable).
 
-`log_date_time` and `log_date_only` are both derived from the local value —
-**set `ATTENDANCE_TIMEZONE`**, or an IST office's 09:15 arrival is stored as 03:45 and
-a 22:00 punch lands on the previous day.
+`log_date_time` and `log_date_only` are both derived from the local value.
+`ATTENDANCE_TIMEZONE` defaults to **`Asia/Kathmandu`** (UTC+05:45). Setting it to UTC
+would store a 09:15 arrival as 03:30 and put a 22:00 punch on the previous day.
 
 ## Employee photos
 

@@ -117,19 +117,26 @@ def test_a_zero_gap_disables_the_check() -> None:
 
 
 def test_utc_is_converted_to_the_configured_zone() -> None:
-    """The bug this fixes: 03:45 UTC is an IST office's 09:15 arrival."""
-    punch = to_local(datetime(2026, 3, 1, 3, 45, tzinfo=UTC), "Asia/Kolkata")
+    """The bug this fixes: 03:30 UTC is a Kathmandu office's 09:15 arrival."""
+    punch = to_local(datetime(2026, 3, 1, 3, 30, tzinfo=UTC), "Asia/Kathmandu")
     assert format_datetime(punch) == "2026-03-01 09:15:00"
 
 
 def test_a_late_punch_lands_on_the_right_local_day() -> None:
-    """22:00 IST is the previous day in UTC; log_date_only must not follow UTC."""
-    punch = to_local(datetime(2026, 3, 1, 16, 30, tzinfo=UTC), "Asia/Kolkata")
+    """22:00 in Kathmandu is still the previous day in UTC; the date must be local."""
+    punch = to_local(datetime(2026, 3, 1, 16, 15, tzinfo=UTC), "Asia/Kathmandu")
     assert format_date(punch) == "2026-03-01"
     assert format_datetime(punch) == "2026-03-01 22:00:00"
 
-    just_after_midnight = to_local(datetime(2026, 3, 1, 18, 40, tzinfo=UTC), "Asia/Kolkata")
+    just_after_midnight = to_local(datetime(2026, 3, 1, 18, 20, tzinfo=UTC), "Asia/Kathmandu")
     assert format_date(just_after_midnight) == "2026-03-02"
+    assert format_datetime(just_after_midnight) == "2026-03-02 00:05:00"
+
+
+def test_the_offset_is_the_odd_forty_five_minute_one() -> None:
+    """Nepal is UTC+05:45, not a whole or half hour -- a wrong zone is 15 min out."""
+    punch = to_local(datetime(2026, 3, 1, 0, 0, tzinfo=UTC), "Asia/Kathmandu")
+    assert format_datetime(punch) == "2026-03-01 05:45:00"
 
 
 def test_an_unknown_zone_falls_back_to_utc_rather_than_raising() -> None:
@@ -139,7 +146,7 @@ def test_an_unknown_zone_falls_back_to_utc_rather_than_raising() -> None:
 
 def test_the_local_value_is_naive() -> None:
     """MySQL DATETIME carries no zone, so comparing against an aware value raises."""
-    punch = to_local(datetime(2026, 3, 1, 3, 45, tzinfo=UTC), "Asia/Kolkata")
+    punch = to_local(datetime(2026, 3, 1, 3, 30, tzinfo=UTC), "Asia/Kathmandu")
     assert punch.tzinfo is None
     # The comparison decide() makes must not raise against a naive row.
     assert isinstance(decide([DayRow(1, punch)], punch, 60), Skip)

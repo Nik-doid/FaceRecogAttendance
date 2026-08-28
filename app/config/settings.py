@@ -146,9 +146,9 @@ class Settings(BaseSettings):
     # check-in. Raising this breaks that guarantee.
     attendance_consumer_prefetch: int = 1
     # The zone the attendance table is read in. Events travel as UTC; log_date_time
-    # and log_date_only are both derived from the local value. UTC here means an IST
-    # office's 09:15 arrival is stored as 03:45.
-    attendance_timezone: str = "UTC"
+    # and log_date_only are both derived from the local value. Setting this to UTC
+    # would store a 09:15 arrival as 03:30 and put a 22:00 punch on the previous day.
+    attendance_timezone: str = "Asia/Kathmandu"
     # A punch within this many seconds of an existing row for the same employee and
     # day is ignored. Does double duty: it makes an at-least-once redelivery a no-op
     # without any dedup store, and stops someone lingering in front of the camera

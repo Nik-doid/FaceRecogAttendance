@@ -71,6 +71,8 @@ and `tests/test_attendance_policy.py` is where the correctness of the flow lives
   `NULL` for the same reason. Only the camera runner passes `RABBITMQ`.
 - **`captured_at` is stamped when the frame is read**, not when it is published, so a
   broker outage cannot move everyone's punch time.
+- **`ATTENDANCE_TIMEZONE` is `Asia/Kathmandu` (UTC+05:45), not a whole-hour offset.**
+  A zone that is merely close is fifteen minutes wrong on every row.
 - **`to_local()` returns a *naive* datetime.** MySQL `DATETIME` carries no zone, so
   the rows read back are naive local; returning an aware value makes the gap
   comparison raise on the first punch of a day that already had one.

@@ -31,7 +31,7 @@ def _message(**overrides: Any) -> dict[str, Any]:
     message = {
         "employee_code": "EMP1",
         "camera_id": "cam-01",
-        "timestamp": "2026-03-02T03:45:00+00:00",
+        "timestamp": "2026-03-02T03:30:00+00:00",
         "confidence": 0.71,
     }
     message.update(overrides)
@@ -85,7 +85,7 @@ class FakeMysql:
 def _writer(client: FakeMysql, **config: Any) -> AttendanceLogWriter:
     defaults = {
         "camera_mapping": MAPPING,
-        "timezone": "Asia/Kolkata",
+        "timezone": "Asia/Kathmandu",
         "min_punch_gap_seconds": 60,
     }
     defaults.update(config)
@@ -109,7 +109,7 @@ def test_first_punch_inserts_with_the_mapped_camera() -> None:
 
 
 def test_the_written_time_is_local_not_utc() -> None:
-    """03:45 UTC is 09:15 in Asia/Kolkata; storing the UTC value was the old bug."""
+    """03:30 UTC is 09:15 in Kathmandu; storing the UTC value was the old bug."""
     client = FakeMysql()
     _writer(client).handle(_message())
     (row,) = client.inserted
@@ -133,7 +133,7 @@ def test_third_punch_updates_the_second_row() -> None:
     assert outcome.action == "updated"
     (row_id, row) = client.updated[0]
     assert row_id == 2, "the check-in row must never be the update target"
-    assert row.log_date_time == "2026-03-02 18:30:00"
+    assert row.log_date_time == "2026-03-02 18:45:00"
     assert client.inserted == []
 
 
@@ -189,7 +189,7 @@ def test_a_vanished_update_target_is_permanent() -> None:
 def test_a_naive_timestamp_is_read_as_utc() -> None:
     """Treating it as local would silently shift the punch by the offset."""
     client = FakeMysql()
-    _writer(client).handle(_message(timestamp="2026-03-02T03:45:00"))
+    _writer(client).handle(_message(timestamp="2026-03-02T03:30:00"))
     assert client.inserted[0].log_date_time == "2026-03-02 09:15:00"
 
 
@@ -348,7 +348,7 @@ def test_the_whole_day_through_the_consumer() -> None:
         )
 
     consumer = _consumer(_writer(client), channel)
-    base = datetime(2026, 3, 2, 3, 45, tzinfo=UTC)
+    base = datetime(2026, 3, 2, 3, 30, tzinfo=UTC)
     for hours in (0, 8, 9, 10):
         consumer._dispatch(
             _Method(), _Props(), _body(timestamp=(base + timedelta(hours=hours)).isoformat())

@@ -13,11 +13,11 @@ log = get_logger(__name__)
 
 def build_attendance_consumer(settings: Settings) -> AttendanceConsumer:
     if settings.attendance_timezone.upper() == "UTC":
-        # Almost certainly not what an attendance table wants: an IST office's 09:15
-        # arrival lands as 03:45, and a 22:00 punch lands on the previous day.
+        # Almost certainly not what an attendance table wants: in Nepal (UTC+05:45)
+        # a 09:15 arrival lands as 03:30, and a 22:00 punch on the previous day.
         log.warning(
             "ATTENDANCE_TIMEZONE is UTC, so punches are logged in UTC. Set it to the "
-            "zone the attendance table is read in (e.g. Asia/Kolkata) if that is wrong."
+            "zone the attendance table is read in (e.g. Asia/Kathmandu) if that is wrong."
         )
 
     client = AttendanceMysql(

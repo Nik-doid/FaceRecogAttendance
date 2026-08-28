@@ -30,6 +30,11 @@ def test_defaults() -> None:
     assert s.attendance_broker == "rabbitmq"
 
 
+def test_the_attendance_timezone_defaults_to_nepal() -> None:
+    """Deployment is in Nepal; leaving this at UTC silently shifts every punch."""
+    assert Settings(_env_file=None).attendance_timezone == "Asia/Kathmandu"
+
+
 def test_the_consumer_is_off_until_switched_on() -> None:
     """Nothing writes to an ERP database because a service happened to boot."""
     assert Settings(_env_file=None).attendance_consumer_enabled is False
