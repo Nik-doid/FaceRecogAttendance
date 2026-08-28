@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.v1.endpoints import webcam as webcam_endpoint
+from app.api.v1.endpoints import websocket as websocket_endpoint
 from app.config.settings import settings
 from app.core.face_processing.dispatchers import (
     FaceDetectionDispatcher,
@@ -217,7 +217,7 @@ def test_scan_regions_magnifies_a_small_palm() -> None:
 
 
 def test_palm_debounce_holds_state_until_enough_frames_agree() -> None:
-    debounce = webcam_endpoint.PalmDebounce(confirm_frames=2)
+    debounce = websocket_endpoint.PalmDebounce(confirm_frames=2)
     assert debounce.update(True) is False  # one frame is not enough to flip
     assert debounce.update(True) is True
     assert debounce.update(False) is True  # nor to flip back
@@ -226,7 +226,7 @@ def test_palm_debounce_holds_state_until_enough_frames_agree() -> None:
 
 def test_palm_debounce_resets_pending_on_disagreement() -> None:
     """A lone stray detection between negatives must not accumulate toward a flip."""
-    debounce = webcam_endpoint.PalmDebounce(confirm_frames=2)
+    debounce = websocket_endpoint.PalmDebounce(confirm_frames=2)
     assert debounce.update(True) is False
     assert debounce.update(False) is False
     assert debounce.update(True) is False
@@ -256,7 +256,7 @@ class _FakeReader:
 @needs_model
 def test_camera_ws_reports_a_camera_it_cannot_open(client: TestClient, monkeypatch) -> None:
     monkeypatch.setattr(
-        webcam_endpoint, "_create_camera_reader", lambda _s: _FakeReader(opens=False)
+        websocket_endpoint, "_create_camera_reader", lambda _s: _FakeReader(opens=False)
     )
     with client.websocket_connect("/api/v1/camera/ws") as ws:
         assert "error" in ws.receive_json()
@@ -267,7 +267,7 @@ def test_camera_ws_streams_frames_and_detection_results(
     client: TestClient, monkeypatch
 ) -> None:
     """The RTSP socket must emit both video and pipeline output, not just video."""
-    monkeypatch.setattr(webcam_endpoint, "_create_camera_reader", lambda _s: _FakeReader())
+    monkeypatch.setattr(websocket_endpoint, "_create_camera_reader", lambda _s: _FakeReader())
 
     frames = 0
     detection = None
