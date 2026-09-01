@@ -1,0 +1,252 @@
+# Full Workflow: index.html → Backend
+
+## 1. Frontend (`frontend/index.html`)
+
+**Single page with two WebSocket modes:**
+
+| Mode | Endpoint | Purpose |
+|------|----------|---------|
+| **Server Camera** | `/api/v1/camera/ws` | View-only: watches the always-on `CameraRunner` |
+| **Browser Webcam** | `/api/v1/webcam/ws` | Debug: sends webcam frames to server for detection |
+
+**Key JS flows:**
+- `connectServerCamera()` → WebSocket to `/camera/ws`, receives JPEG frames + JSON detection payloads
+- `connectBrowserWebcam()` → captures via `getUserMedia()`, encodes JPEG every 66ms (~15fps), sends to `/webcam/ws`
+- `runnerAction('start'|'stop')` → `POST /api/v1/camera/start|stop` with Bearer token (admin only)
+- `refreshRunner()` polls `/api/v1/camera/status` every 2s
+
+---
+
+## 2. FastAPI Entry (`app/main.py`)
+
+```python
+def create_app(container=None) -> FastAPI:
+    app = FastAPI(lifespan=_lifespan(container))
+    app.include_router(api_router, prefix="/api/v1")
+    
+    @app.get("/")
+    async def index(): return FileResponse("frontend/index.html")
+```
+
+**Startup (`_lifespan`):**
+1. `setup_logging()`
+2. `Container()` — builds DI graph
+3. `container.start_gallery_build()` — background thread enrols employee photos
+4. `container.camera_runner.start()` if `CAMERA_AUTOSTART=true`
+5. `container.start_attendance_consumer()` — in-process RabbitMQ consumer
+
+---
+
+## 3. DI Container (`app/container.py`)
+
+**Singletons (lazy):**
+| Property | What it builds | Notes |
+|----------|----------------|-------|
+| `models` | `load_models()` → SCRFD + ArcFace ONNX sessions | Thread-safe, shared process-wide |
+| `gallery` | `GalleryHandle.current` | Empty until background build finishes |
+| `camera_runner` | `CameraRunner(..., reporter, suppressor)` | Factory for `models` so `/status` works without loading models |
+| `attendance_reporter` | `RabbitMQAttendanceReporter` | Publishes `AttendanceEvent` to queue |
+| `duplicate_suppressor` | Rate-limits publishes per employee | Not business logic — consumer decides punch validity |
+
+---
+
+## 4. Camera Runner (`app/camera/runner.py`)
+
+**Runs on a daemon thread with its own asyncio loop** (blocking `cv2.VideoCapture.read()` would stall FastAPI loop).
+
+**Main loop (`_loop`):**
+```
+while not stopped:
+    if reader is None:  # connect/reconnect with backoff
+        reader = _default_reader(settings)
+        reader.open()
+    
+    frame = reader.read()  # blocking
+    
+    # Always publish JPEG to FrameHub for viewers
+    hub.publish_frame(jpeg_bytes)
+    
+    # Time-driven detection (not frame-counted)
+    if no_scan_running and now - last_scan >= scan_interval:
+        detected_at = datetime.now(UTC)  # ← timestamp captured HERE
+        task = asyncio.create_task(process.process_frames(frame, FrameContext(...)))
+    
+    if task_done:
+        payload = detection_payload(result, shape)
+        hub.publish_detection(payload)
+    
+    await asyncio.sleep(0.033)  # ~30fps
+```
+
+**Key invariants:**
+- `captured_at` stamped at **frame read time**, not publish time
+- Only the runner passes `FrameContext` → only it can record attendance
+- `FrameHub` decouples runner from WebSocket viewers
+
+---
+
+## 5. WebSocket Endpoints (`app/api/v1/endpoints/websocket.py`)
+
+### `/camera/ws` — Viewer (read-only)
+```python
+async def camera_ws(ws, container):
+    hub = container.frame_hub
+    while True:
+        snapshot = hub.snapshot()
+        if new_frame: await ws.send_bytes(snapshot.jpeg)
+        if new_detection: await ws.send_json(snapshot.detection)
+        await asyncio.sleep(0.033)
+```
+
+### `/webcam/ws` — Debug surface
+```python
+async def webcam_ws(ws, container):
+    process = _create_process(container, config)  # per-connection (owns cv2.dnn palm net)
+    while True:
+        frame = cv2.imdecode(await ws.receive_bytes())
+        await ws.send_bytes(jpeg)  # echo frame back
+        if frame_index % 2 == 0:
+            result = await process.process_frames(frame)  # NO FrameContext → no attendance
+            await ws.send_json(detection_payload(result, shape))
+```
+
+---
+
+## 6. Face Recognition Pipeline (`app/services/face_recognition/process.py`)
+
+```python
+async def process_frames(frame, ctx=None):
+    # 1. Face detection (SCRFD) — always runs
+    faces = await face_detection.detect(frame)
+    if not faces: return FrameResult(palm=NO_PALM)
+    
+    # 2. Looking gate (gaze.py) — free, uses landmarks from step 1
+    faces = [with_gaze(f) for f in faces]
+    looking = [i for i, f in enumerate(faces) if f.looking]
+    if not looking: return FrameResult(palm=NO_PALM, faces=faces)
+    
+    # 3. Palm detection — per looking face, own search box
+    regions = [palm_search_box(faces[i].bbox, ...) for i in looking]
+    palms = await palm_detection.detect(frame, regions)
+    raised = [i for i in looking if faces[i].palm]
+    if not raised: return FrameResult(palm=best_palm, faces=faces)
+    
+    # 4. Face recognition (ArcFace) — only raised-hand faces
+    recognized = await face_recognition.recognize(frame, [faces[i] for i in raised])
+    
+    # 5. Mark attendance — ONLY if ctx provided (camera runner only)
+    if ctx is not None:
+        await mark_attendance.mark([faces[i] for i in raised], ctx)
+    
+    return FrameResult(palm=best_palm, faces=faces)
+```
+
+**Dispatchers** (swappable via `FaceProcessConfig` enum):
+- `FaceDetectionDispatcher` → SCRFD
+- `FaceRecognitionDispatcher` → ArcFace + FAISS gallery
+- `PalmDetectionDispatcher` → MediaPipe (cv2.dnn, NOT thread-safe → per-process)
+- `MarkAttendanceDispatcher` → RabbitMQ / Null
+
+---
+
+## 7. Attendance Reporter (`app/services/attendance_reporter/rabbitmq.py`)
+
+```python
+def report(self, event: AttendanceEvent) -> ReportResult:
+    # Must not raise — publisher runs in camera thread
+    try:
+        channel.basic_publish(
+            exchange="",
+            routing_key=queue,
+            body=json.dumps(event.as_dict()),
+            properties=BasicProperties(delivery_mode=2, content_type="application/json")
+        )
+        return ReportResult(success=True)
+    except Exception as e:
+        return ReportResult(success=False, detail=str(e))
+```
+
+---
+
+## 8. Attendance Consumer (`app/services/attendance_consumer/consumer.py`)
+
+**Separate process/thread with own `pika.BlockingConnection`** (not thread-safe).
+
+**Consume loop:**
+```python
+for method, props, body in channel.consume(queue, auto_ack=False):
+    message = json.loads(body)
+    
+    try:
+        outcome = writer.handle(message)  # policy.py decides punch type
+        ack()
+    except PermanentFailure:      # malformed, unknown employee, bad camera
+        dead_letter() + ack()     # never requeue poison
+    except TransientDatabaseError: # MySQL down, deadlock
+        sleep(backoff) + nack(requeue=True)
+    except Exception:
+        dead_letter() + ack()
+```
+
+---
+
+## 9. Attendance Policy (`app/services/attendance_consumer/policy.py`)
+
+**Pure logic (no I/O) — tested in `test_attendance_policy.py`:**
+
+| Punch # | Action | Rule |
+|---------|--------|------|
+| 1st | `check_in` | First punch of day |
+| 2nd | `check_out` | > `min_gap_minutes` after check-in |
+| 3rd | **update row 2** | Replace check-out time |
+| 4th+ | `check_in` (new day logic) | New day or > threshold |
+
+`to_local()` returns **naive** datetime in `Asia/Kathmandu` (UTC+05:45) — MySQL `DATETIME` has no zone.
+
+---
+
+## 10. Data Flow Summary
+
+```
+RTSP Camera
+    │
+    ▼
+CameraRunner (daemon thread, own event loop)
+    │
+    ├─▶ cv2.VideoCapture.read() → frame + captured_at (UTC)
+    │
+    ├─▶ FrameHub.publish_frame(jpeg) ──▶ /camera/ws viewers (browser)
+    │
+    ├─▶ process_frames(frame, FrameContext) ──▶ FaceRecognitionProcess
+    │       │
+    │       ├─▶ SCRFD detect
+    │       ├─▶ Gaze filter
+    │       ├─▶ MediaPipe palm detect
+    │       ├─▶ ArcFace recognize (FAISS gallery)
+    │       └─▶ AttendanceReporter.report(AttendanceEvent) ──▶ RabbitMQ
+    │
+    └─▶ FrameHub.publish_detection(payload) ──▶ /camera/ws viewers
+
+RabbitMQ queue
+    │
+    ▼
+AttendanceConsumer (separate process/thread)
+    │
+    ├─▶ Policy.decide() → check_in / check_out / update
+    │
+    └─▶ MySQL: ct_hr_employee_attendance_log
+```
+
+---
+
+## Critical Invariants (from CLAUDE.md)
+
+| Rule | Enforcement |
+|------|-------------|
+| Attendance only with `FrameContext` | `process_frames(ctx=None)` skips step 5; only runner passes ctx |
+| `captured_at` at frame read | `detected_at = datetime.now(UTC)` before `create_task()` |
+| Timezone = `Asia/Kathmandu` (UTC+05:45) | `ATTENDANCE_TIMEZONE` constant, `to_local()` returns naive |
+| Handlers never raise | `AttendanceReporter.report()` returns `ReportResult`, catches all |
+| No poison requeue | Consumer dead-letters + acks on permanent failure |
+| `EMPLOYEE_PHOTOS_SOURCE` = `list[str]` | URLs as strings, not `Path` (collapses `//`) |
+| Gallery builds in background | `GalleryHandle` swaps atomically; empty gallery = degraded mode |
