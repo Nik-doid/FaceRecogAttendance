@@ -79,16 +79,25 @@ class FaceIndex:
         with self._lock:
             if self._index.ntotal == 0:
                 return []
-            # Search for enough candidates to cover all employees (max 10 per employee)
-            max_candidates = min(self._index.ntotal, k * 10)
+            # Candidates must cover k distinct *employees*, and rows are per photo. At
+            # k*10 alone, one employee with ten photos can fill the whole pool and hide
+            # everybody else -- which silently costs the runner-up that a rank margin
+            # needs. Scale by the worst-case photo count instead.
+            per_employee = self._max_rows_per_employee()
+            max_candidates = min(self._index.ntotal, max(k * 10, k * per_employee * 2))
             scores, idxs = self._index.search(vec, max_candidates)
+            # Snapshot under the same lock as the search. `rebuild` replaces index and
+            # codes together, so reading codes after releasing it can map this search's
+            # row numbers onto the next gallery's codes -- a punch against the wrong
+            # employee, roughly once per GALLERY_REFRESH_SECONDS.
+            codes = list(self._codes)
 
         # Group by employee_code, keep best score
         best_per_employee: dict[str, float] = {}
         for score, idx in zip(scores[0], idxs[0], strict=False):
-            if idx < 0 or idx >= len(self._codes):
+            if idx < 0 or idx >= len(codes):
                 continue
-            code = self._codes[int(idx)]
+            code = codes[int(idx)]
             score = float(score)
             if code not in best_per_employee or score > best_per_employee[code]:
                 best_per_employee[code] = score
@@ -110,6 +119,15 @@ class FaceIndex:
     def size(self) -> int:
         with self._lock:
             return int(self._index.ntotal)
+
+    def _max_rows_per_employee(self) -> int:
+        """Rows held by the employee with the most enrolment photos. Caller holds the lock."""
+        if not self._codes:
+            return 1
+        counts: dict[str, int] = {}
+        for code in self._codes:
+            counts[code] = counts.get(code, 0) + 1
+        return max(counts.values())
 
     @property
     def employee_codes(self) -> set[str]:

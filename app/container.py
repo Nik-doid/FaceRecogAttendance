@@ -99,6 +99,8 @@ class Container:
                 cache=build_cache(
                     self.settings.storage_path,
                     self.settings.models_dir / self.settings.recognize_model,
+                    self.settings.models_dir / self.settings.detect_model,
+                    self.settings.detect_input_size,
                 ),
             )
         finally:

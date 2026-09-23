@@ -25,7 +25,16 @@ class SCRFDDetector(Detector):
         model_name: str = "det_10g.onnx",
         providers: list[str] | None = None,
         input_size: int = 640,
-        max_num: int = 10,
+        # 0 = uncapped, and it must stay that way on a wide room shot. When more
+        # detections than this survive, insightface ranks them by
+        # `area - 2 * offset_dist_squared` in *pixel* units and keeps the top N: on a
+        # 1920-wide frame a face 400px off centre contributes 2*400**2 = 320_000
+        # against a 60px face's area of ~4_500, so the area term is noise and the
+        # ranking is purely "closest to frame centre". The cap therefore discards
+        # small off-centre faces first -- exactly the population a ceiling camera
+        # sees. SCRFD's own per-pass NMS and det_thresh already bound the output to
+        # real faces, so there is nothing left for the cap to do.
+        max_num: int = 0,
         det_thresh: float = 0.5,
         models_dir: str | None = None,
     ) -> None:
@@ -45,12 +54,24 @@ class SCRFDDetector(Detector):
         """Execution providers onnxruntime actually resolved for this session."""
         return list(self._model.session.get_providers())
 
-    def detect(self, image_bgr: np.ndarray) -> list[DetectedFace]:
+    def detect(
+        self, image_bgr: np.ndarray, input_size: int | None = None
+    ) -> list[DetectedFace]:
+        """Detect faces. ``input_size`` overrides the configured letterbox for one call.
+
+        The override exists for the evaluation harness, which sweeps input sizes to
+        find where this camera's faces stop being resolvable. insightface takes the
+        size per call, so sweeping needs no second session -- and production passes
+        nothing, keeping the configured value.
+        """
+        size = self._input_size if input_size is None else input_size
         try:
             bboxes, kpss = self._model.detect(
                 image_bgr,
-                input_size=(self._input_size, self._input_size),
+                input_size=(size, size),
                 max_num=self._max_num,
+                # Unreachable at max_num=0, which is the default and the only sane
+                # value here; kept so the call still matches insightface's signature.
                 metric="default",
             )
         except ValueError:

@@ -47,7 +47,35 @@ class Settings(BaseSettings):
     camera_source: Literal["rtsp", "device"] = "rtsp"
     camera_device_index: int = 0
     camera_autostart: bool = False
-    max_frame_width: int = 1280
+    # The width the pipeline works in, and therefore the width ArcFace crops from.
+    # This is the *crop* lever, not the detection lever: a face reaches SCRFD at
+    # `frame_fraction * DETECT_INPUT_SIZE` pixels no matter what this is, because the
+    # reader's resize and insightface's letterbox cancel exactly. What it does decide
+    # is how many real pixels `norm_crop` has to warp into ArcFace's 112x112 -- at
+    # 1280 a 1920-wide source arrives with a third of its face pixels already thrown
+    # away. Explicitly 1920 rather than 0: 0 removes the ceiling and a 4K substream
+    # would then flow through a JPEG encode that is quadratic in width.
+    #
+    # Raising this changes what MIN_FACE_PIXELS *means* -- the same person in the same
+    # spot measures 1.5x wider -- so accuracy figures do not compare across a change
+    # to it.
+    max_frame_width: int = 1920
+    # Preview frames published to /camera/ws viewers are downscaled to this width
+    # before JPEG encoding. The encode runs on every frame at ~30fps rather than once
+    # per scan, and at 1080p it costs ~14ms against ~6ms at 720p -- 0.4 of a core on a
+    # two-core box, spent for viewers who may not be connected at all (FrameHub keeps
+    # no registry, so the runner cannot tell). Detection keeps the full-resolution
+    # frame; `detection_payload` stamps the detection frame's own width and height and
+    # the page scales boxes by those, so the two resolutions may differ freely.
+    # 0 encodes the frame as-is.
+    preview_frame_width: int = 1280
+    # Floor for the frame width, applied after max_frame_width. A CCTV *substream*
+    # (640x360 is common) reaches the pipeline with faces a few dozen pixels wide.
+    # Upscaling adds no information -- what it buys is that every downstream crop
+    # (ArcFace 112x112, BlazePalm 192x192) is resampled once, from a frame of a
+    # predictable size, instead of twice. 0 disables it. Prefer pointing RTSP_URL at
+    # the main stream over raising this.
+    min_frame_width: int = 0
     # Run the webcam pipeline on every Nth frame of the /camera/ws stream. Detection
     # runs concurrently with streaming, so this caps CPU, not the frame rate. At ~30fps
     # 10 is a scan every ~330ms, which leaves a real gap either side of a
@@ -82,7 +110,72 @@ class Settings(BaseSettings):
 
     # --- Recognition ---------------------------------------------------------
     recognition_threshold: float = 0.60
+    # A match must also beat the runner-up by this much. Rejects the failure mode a
+    # threshold cannot see: several enrolled people scoring alike because the crop
+    # carries too little information to separate them. Unlike the threshold it is
+    # differential, so it survives the common-mode score collapse that comes with
+    # distance -- see ArcFaceRecognition's docstring.
+    #
+    # Ships at 0.0 (off) deliberately. The value has to come from the joint
+    # (threshold, margin) sweep in `python -m app.services.evaluation`, run against a
+    # gallery the size of the real one: the runner-up gets stronger as employees are
+    # added, so a margin tuned on four people will reject half the workforce at five
+    # hundred.
+    recognition_margin: float = 0.0
     detect_thresh: float = 0.40
+    # The square SCRFD is letterboxed into. THIS is the small-face lever, not
+    # MAX_FRAME_WIDTH: insightface rescales every frame to fit this box, so at 640 a
+    # 1920x1080 feed is detected at 640x360 and a face 3% of frame width (58px)
+    # reaches the network as 19px -- under the ~16px floor of the stride-8 anchors
+    # once landmark precision is counted, which is why a webcam face at 30cm works
+    # and the same person on a ceiling-mounted CCTV never gets past step 1.
+    # Cost grows FASTER than the area. Measured with
+    # `python -m app.services.evaluation` on a 4-core dev box: 640 is ~0.69s per pass
+    # and 1280 is ~4.9s -- a 7x jump for 4x the pixels, not the 4x an area argument
+    # predicts. Budget from that measurement and not from the arithmetic: at ~4.9s of
+    # detection plus ~1.1s of ArcFace, one scan is already past the few seconds a
+    # person will stand still, so raising this to 1280 needs
+    # CAMERA_SCAN_INTERVAL_MS raised well past it and probably needs the frame cropped
+    # to the band people actually occupy first. Re-measure on your own hardware before
+    # committing to a value. Must be a multiple of 32 (SCRFD's largest stride).
+    detect_input_size: int = 640
+    # Below this face width in source pixels, ArcFace is not attempted at all. It
+    # aligns every crop to 112x112, so a 27x35 box is a handful of pixels across each
+    # eye and the nose bridge: interpolating that up to 112 adds no detail back, and
+    # the embedding is not discriminative no matter how sharp those few pixels are.
+    #
+    # The point is not saved compute, it is honesty: without the gate, "too far from
+    # the camera" and "not enrolled" produce the same result, and only the second is
+    # worth acting on. 0 disables it entirely.
+    #
+    # 32 rather than a rounder 60, from a deployment where people walk up to the lens
+    # and still measure ~44px: a floor above the faces a site actually produces does
+    # not report a problem, it silently switches recognition off, and the symptom is
+    # indistinguishable from the gallery being broken. 32 is where ArcFace has
+    # genuinely nothing to work with (~4px across an eye); between 32 and 60 it is
+    # worth attempting and the score can say so for itself. Raise it once
+    # `python -m app.services.evaluation` shows the width at which rank-1 collapses on
+    # your own footage -- that number is the only honest source for this.
+    min_face_pixels: int = 32
+    # How many scans of the same person must agree on the same employee code before
+    # attendance is recorded. The interaction here is somebody walking up, looking at
+    # the lens and holding a hand up for a few seconds, which is several scans of one
+    # face -- so requiring agreement costs no extra waiting that the person is not
+    # already doing, and it converts a run of independent attempts into one decision.
+    #
+    # Do NOT reason about this as p**K. Consecutive scans of a stationary person under
+    # fixed lighting through a fixed lens are nearly the same vector, so a wrong match
+    # repeats for the same reason it happened; what agreement removes is the
+    # uncorrelated part (one landmark glitch, one blurred scan). The real reduction is
+    # much smaller than independence predicts and has to be measured -- see the
+    # per-track FAR in `python -m app.services.evaluation`.
+    #
+    # 1 is today's behaviour: publish on the first accepted scan. 2 costs roughly one
+    # extra scan of wall clock; 3 is about the most the few seconds allows.
+    track_confirm_scans: int = 1
+    # Scans a track survives unseen before being dropped. Long enough to ride out a
+    # turned head, short enough that the next person to stand there is a new track.
+    track_max_age_scans: int = 3
     duplicate_timeout_seconds: int = 300
     # Require employee to be "engaged" (looking at camera + waving) before recording attendance.
     # When False, any quality-passed face triggers attendance (legacy behavior).
@@ -218,6 +311,14 @@ class Settings(BaseSettings):
             return [part.strip() for part in v.split(",") if part.strip()]
         if isinstance(v, list):
             return [str(part).strip() for part in v if str(part).strip()]
+        return v
+
+    @field_validator("detect_input_size")
+    @classmethod
+    def _check_detect_input_size(cls, v: int) -> int:
+        """SCRFD's feature maps are the input over strides 8/16/32."""
+        if v < 320 or v % 32 != 0:
+            raise ValueError("detect_input_size must be a multiple of 32 and >= 320")
         return v
 
     @field_validator("erp_camera_mapping", mode="before")

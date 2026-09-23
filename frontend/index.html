@@ -76,6 +76,7 @@ const ctx = canvas.getContext("2d");
 const octx = overlay.getContext("2d");
 const MATCH_COLOR = "#4ade80";    // recognised: box + label in green
 const UNKNOWN_COLOR = "#fbbf24";  // hand up, but under the recognition threshold
+const SMALL_COLOR = "#f87171";    // too few pixels to embed: the gallery was never asked
 const AWAY_COLOR = "#94a3b8";     // not looking, or no hand up: never identified
 let received = 0;
 let ws = null;
@@ -172,7 +173,12 @@ function drawFaces(msg) {
         ? `${faces.length} face${faces.length > 1 ? "s" : ""} · not looking`
         : raised.length === 0
           ? `${looking.length} looking · no hand`
-          : `${raised.length} hand·up · unknown`;
+          : raised.every((f) => f.too_small)
+            // "too far from the camera" and "not enrolled" have different fixes, and
+            // only one of them is about the gallery. Saying "unknown" for both is what
+            // sends people to tune a threshold against a problem no threshold reaches.
+            ? `${raised.length} hand·up · too far`
+            : `${raised.length} hand·up · unknown`;
   facesEl.classList.toggle("on", faces.length > 0);
   facesEl.classList.toggle("matched", named.length > 0);
   if (faces.length === 0) return;
@@ -192,7 +198,16 @@ function drawFaces(msg) {
     let label = face.looking ? "no hand" : `away ${face.yaw.toFixed(2)}`;
     if (face.employee_code) {
       color = MATCH_COLOR;
-      label = `${face.employee_code} ${face.confidence.toFixed(2)}`;
+      const margin = face.margin ? ` +${face.margin.toFixed(2)}` : "";
+      label = `${face.employee_code} ${face.confidence.toFixed(2)}${margin}`;
+    } else if (face.too_small) {
+      // Recognition was never attempted: the box is too few pixels for ArcFace to
+      // produce anything discriminative. Its confidence is 0.00 because no search
+      // ran, not because the gallery looked and failed -- which is the whole reason
+      // this case has its own colour instead of reading as a near miss.
+      color = SMALL_COLOR;
+      const width = Math.round(x2 - x1);
+      label = `too far · ${width}px`;
     } else if (face.palm) {
       color = UNKNOWN_COLOR;
       label = `unknown ${face.confidence.toFixed(2)}`;

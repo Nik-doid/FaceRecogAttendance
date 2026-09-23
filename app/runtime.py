@@ -39,6 +39,7 @@ def load_models(settings: Settings) -> Models:
         model_name=settings.detect_model,
         providers=providers,
         det_thresh=settings.detect_thresh,
+        input_size=settings.detect_input_size,
         models_dir=models_dir,
     )
     recognizer = ArcFaceRecognizer(
@@ -53,6 +54,9 @@ def load_models(settings: Settings) -> Models:
         "inference models loaded",
         extra={
             "requested_providers": providers,
+            # The lever for small CCTV faces; log it so a feed that detects nothing
+            # can be checked against it without reading the config.
+            "detect_input_size": settings.detect_input_size,
             "detector_providers": list(detector.providers),
             "recognizer_providers": list(recognizer.providers),
         },

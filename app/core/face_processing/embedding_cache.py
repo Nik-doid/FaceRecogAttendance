@@ -9,8 +9,15 @@ nothing else.
 
 Entries are keyed by :attr:`PhotoRef.key`, which folds in the photo's version (mtime
 and size locally, ETag remotely), so an edited photo misses the cache and re-embeds
-while an untouched one does not. The whole cache is discarded when the recognition
-model changes, since embeddings from a different model are not comparable.
+while an untouched one does not.
+
+The whole cache is discarded when anything that *produced* the vectors changes -- see
+:func:`enrolment_fingerprint`. That is deliberately wider than the recognition model
+alone: a cached vector is the output of detect, align and embed together, so a changed
+detector, a changed detector input size or a changed alignment step all invalidate it
+just as surely as a changed ArcFace. Keying on the recognition model alone meant an
+experiment silently reused vectors that no longer matched the live path, and the usual
+symptom is a real improvement that measures as no change at all.
 """
 
 from __future__ import annotations
@@ -27,6 +34,10 @@ from app.core.logging import get_logger
 log = get_logger(__name__)
 
 CACHE_VERSION = 1
+# Bump when the code in `gallery._embed_ref` changes what a vector means -- a new
+# alignment, a resample, a colour conversion. Nothing reads it but the fingerprint,
+# which is the point: it is the one part of the key a file stat cannot notice.
+PREPROCESS_VERSION = 1
 _VECTORS_NAME = "embeddings.npy"
 _MANIFEST_NAME = "manifest.json"
 
@@ -68,9 +79,9 @@ class EmbeddingCache:
             log.info("embedding cache discarded: format changed")
             return {}
         if manifest.get("model") != self._fingerprint:
-            # Embeddings from a different recognition model share no coordinate
-            # system, so mixing them would silently wreck every similarity score.
-            log.info("embedding cache discarded: recognition model changed")
+            # Embeddings produced by a different detect/align/embed path share no
+            # coordinate system, so mixing them would silently wreck every score.
+            log.info("embedding cache discarded: enrolment path changed")
             return {}
 
         entries = manifest.get("entries")
@@ -131,12 +142,34 @@ class EmbeddingCache:
 
 
 def model_fingerprint(model_path: Path) -> str:
-    """Identify the recognition model by name and mtime, without hashing 174 MiB."""
+    """Identify one model file by name, size and mtime, without hashing 174 MiB."""
     try:
         stat = model_path.stat()
         return f"{model_path.name}:{stat.st_size}:{stat.st_mtime_ns}"
     except OSError:
         return model_path.name
+
+
+def enrolment_fingerprint(
+    recognize_model: Path, detect_model: Path, detect_input_size: int
+) -> str:
+    """Identify everything that decides what a cached enrolment vector means.
+
+    A cached vector is the output of detect -> align -> embed, not of ArcFace alone.
+    The detector picks the box and the five landmarks, `detect_input_size` decides how
+    precisely it picks them, and `norm_crop` turns those landmarks into the 112x112
+    ArcFace actually sees -- so a change to any of them produces a different vector
+    from the same photo. Keying on the recognition model alone let all of that drift
+    while the cache reported a hit.
+    """
+    return ":".join(
+        (
+            f"v{PREPROCESS_VERSION}",
+            model_fingerprint(recognize_model),
+            model_fingerprint(detect_model),
+            f"det{detect_input_size}",
+        )
+    )
 
 
 def _to_npy_bytes(vectors: np.ndarray) -> bytes:

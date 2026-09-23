@@ -29,11 +29,13 @@ class CameraReader:
         source: str = "rtsp",
         device_index: int = 0,
         max_width: int = 1280,
+        min_width: int = 0,
     ) -> None:
         self._url = rtsp_url
         self._source = source
         self._device_index = device_index
         self._max_width = max_width
+        self._min_width = min_width
         self._lock = threading.Lock()
         self._cap: cv2.VideoCapture | None = None
         self.connected = False
@@ -70,11 +72,27 @@ class CameraReader:
             return self._resize(frame)
 
     def _resize(self, frame: np.ndarray) -> np.ndarray:
+        """Bring the frame inside [min_width, max_width], keeping the aspect ratio.
+
+        Upscaling a CCTV substream invents no detail; it only means every downstream
+        crop is resampled from a frame of known size. The lever that actually recovers
+        small faces is DETECT_INPUT_SIZE -- see app/config/settings.py.
+        """
         h, w = frame.shape[:2]
+        target = w
         if self._max_width and w > self._max_width:
-            scale = self._max_width / float(w)
-            frame = cv2.resize(frame, (self._max_width, int(round(h * scale))))
-        return frame
+            target = self._max_width
+        elif self._min_width and w < self._min_width:
+            target = self._min_width
+        if target == w:
+            return frame
+        scale = target / float(w)
+        return cv2.resize(
+            frame,
+            (target, int(round(h * scale))),
+            # INTER_AREA is the right kernel down, INTER_CUBIC up.
+            interpolation=cv2.INTER_AREA if target < w else cv2.INTER_CUBIC,
+        )
 
     def close(self) -> None:
         with self._lock:

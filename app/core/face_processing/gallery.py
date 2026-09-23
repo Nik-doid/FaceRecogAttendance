@@ -33,7 +33,7 @@ from app.ai.recognizer.arcface import ArcFaceRecognizer
 from app.core.face_processing.embedding_cache import (
     CachedEmbedding,
     EmbeddingCache,
-    model_fingerprint,
+    enrolment_fingerprint,
 )
 from app.core.face_processing.photos import PhotoRef, PhotoSource, collect
 from app.core.logging import get_logger
@@ -99,11 +99,19 @@ def build_gallery(
     sources: list[PhotoSource],
     *,
     cache: EmbeddingCache | None = None,
+    degrade_to: int = 0,
 ) -> Gallery:
     """Enumerate every source, embed what is new, and return a searchable gallery.
 
     Photos already in ``cache`` under the same key skip both model passes entirely,
     which is the difference between a six-minute restart and a two-second one.
+
+    ``degrade_to`` low-passes each aligned enrolment crop to that width before
+    embedding, so the gallery carries the same loss of detail the live faces already
+    have. It is an experiment (see ``ArcFaceRecognizer.embed``) and **must not be used
+    with a cache**: the fingerprint does not cover it, so degraded and undegraded
+    vectors would mix silently under one key. ``app/services/evaluation.py`` passes
+    ``cache=None`` for exactly this reason.
     """
     refs = collect(sources)
     index = FaceIndex(dim=EMBEDDING_DIM)
@@ -120,7 +128,9 @@ def build_gallery(
             entries.append(CachedEmbedding(ref.employee_code, ref.key, hit.embedding))
             reused += 1
         else:
-            embedding = _embed_ref(ref, models.detector, models.recognizer)
+            embedding = _embed_ref(
+                ref, models.detector, models.recognizer, degrade_to=degrade_to
+            )
             if embedding is not None:
                 entries.append(CachedEmbedding(ref.employee_code, ref.key, embedding))
         if position % PROGRESS_EVERY == 0:
@@ -155,7 +165,10 @@ def build_gallery(
 
 
 def _embed_ref(
-    ref: PhotoRef, detector: SCRFDDetector, recognizer: ArcFaceRecognizer
+    ref: PhotoRef,
+    detector: SCRFDDetector,
+    recognizer: ArcFaceRecognizer,
+    degrade_to: int = 0,
 ) -> np.ndarray | None:
     """Embed the best-scoring face in one enrolment photo, or None if unusable."""
     data = ref.read()
@@ -176,15 +189,26 @@ def _embed_ref(
         log.warning("no landmarks in enrolment photo", extra={"photo": ref.label})
         return None
 
-    embedding = recognizer.embed(image, best.kps)
+    embedding = recognizer.embed(image, best.kps, degrade_to=degrade_to)
     if not bool(np.isfinite(embedding).all()):
         log.warning("non-finite enrolment embedding", extra={"photo": ref.label})
         return None
     return embedding
 
 
-def build_cache(settings_storage_path: Path, recognize_model: Path) -> EmbeddingCache:
-    """The cache directory for this deployment, fingerprinted by recognition model."""
+def build_cache(
+    settings_storage_path: Path,
+    recognize_model: Path,
+    detect_model: Path,
+    detect_input_size: int,
+) -> EmbeddingCache:
+    """The cache directory for this deployment, keyed by the whole enrolment path.
+
+    Every argument after the directory feeds the fingerprint, so a changed detector or
+    a changed DETECT_INPUT_SIZE re-embeds rather than silently reusing vectors built by
+    a path that no longer exists.
+    """
     return EmbeddingCache(
-        Path(settings_storage_path) / "gallery", model_fingerprint(recognize_model)
+        Path(settings_storage_path) / "gallery",
+        enrolment_fingerprint(recognize_model, detect_model, detect_input_size),
     )

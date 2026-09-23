@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +11,7 @@ import numpy as np
 from app.core.face_processing.embedding_cache import (
     CachedEmbedding,
     EmbeddingCache,
+    enrolment_fingerprint,
     model_fingerprint,
 )
 from app.core.face_processing.gallery import build_gallery
@@ -102,9 +104,11 @@ class _CountingModels:
         self._inner = models.recognizer.embed
 
     def __enter__(self) -> _CountingModels:
-        def counted(image, kps):  # type: ignore[no-untyped-def]
+        # Mirrors the real signature including keywords, so this double does not have
+        # to be revisited every time an optional argument is added to embed().
+        def counted(image, kps, **kwargs):  # type: ignore[no-untyped-def]
             self.embeds += 1
-            return self._inner(image, kps)
+            return self._inner(image, kps, **kwargs)
 
         self.recognizer.embed = counted  # type: ignore[method-assign]
         return self
@@ -139,3 +143,69 @@ def test_warm_start_embeds_nothing(tmp_path: Path, models: Models) -> None:
     # And the warm gallery still recognises: the vectors survived the round trip.
     assert warm.index.size == cold.index.size
     assert warm.employees == 1
+
+
+# --- what invalidates a cached vector ----------------------------------------
+# A cached entry is the output of detect -> align -> embed, not of ArcFace alone, so
+# the key has to cover all three. It used to cover only the recognition model, which
+# meant a changed detector or DETECT_INPUT_SIZE reported a cache hit and handed back
+# vectors from a path that no longer existed -- and the symptom of that is a genuine
+# improvement measuring as no change at all.
+
+
+def _models(tmp_path: Path) -> tuple[Path, Path]:
+    recognize = tmp_path / "w600k_r50.onnx"
+    detect = tmp_path / "det_10g.onnx"
+    recognize.write_bytes(b"recognize")
+    detect.write_bytes(b"detect")
+    return recognize, detect
+
+
+def test_the_detector_input_size_is_part_of_the_key(tmp_path: Path) -> None:
+    """It decides landmark precision, and the landmarks are the whole alignment."""
+    recognize, detect = _models(tmp_path)
+    assert enrolment_fingerprint(recognize, detect, 640) != enrolment_fingerprint(
+        recognize, detect, 1280
+    )
+
+
+def test_the_detector_model_is_part_of_the_key(tmp_path: Path) -> None:
+    recognize, detect = _models(tmp_path)
+    before = enrolment_fingerprint(recognize, detect, 640)
+    detect.write_bytes(b"a different detector entirely")
+    os.utime(detect, (0, 0))
+    assert enrolment_fingerprint(recognize, detect, 640) != before
+
+
+def test_the_recognition_model_is_still_part_of_the_key(tmp_path: Path) -> None:
+    recognize, detect = _models(tmp_path)
+    before = enrolment_fingerprint(recognize, detect, 640)
+    recognize.write_bytes(b"a different arcface")
+    os.utime(recognize, (0, 0))
+    assert enrolment_fingerprint(recognize, detect, 640) != before
+
+
+def test_an_unchanged_enrolment_path_keeps_the_cache(tmp_path: Path) -> None:
+    """Otherwise every restart is a six-minute outage instead of a two-second one."""
+    recognize, detect = _models(tmp_path)
+    first = enrolment_fingerprint(recognize, detect, 640)
+    assert enrolment_fingerprint(recognize, detect, 640) == first
+
+
+def test_a_cache_written_under_one_path_is_discarded_under_another(tmp_path: Path) -> None:
+    recognize, detect = _models(tmp_path)
+    entry = CachedEmbedding(
+        employee_code="EMP1", key="k1", embedding=np.ones(4, dtype="float32")
+    )
+
+    EmbeddingCache(
+        tmp_path / "cache", enrolment_fingerprint(recognize, detect, 640)
+    ).save([entry])
+
+    same = EmbeddingCache(tmp_path / "cache", enrolment_fingerprint(recognize, detect, 640))
+    assert set(same.load()) == {"k1"}
+
+    resized = EmbeddingCache(
+        tmp_path / "cache", enrolment_fingerprint(recognize, detect, 1280)
+    )
+    assert resized.load() == {}

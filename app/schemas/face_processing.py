@@ -64,11 +64,24 @@ class FaceResult(BaseModel):
     # is never identified.
     palm: bool = False
     palm_score: float = 0.0
-    # None means "no gallery match cleared the threshold" -- not "not searched".
+    # True when the box was under MIN_FACE_PIXELS and recognition was skipped. The
+    # distinction that matters: employee_code is None here because nobody looked, not
+    # because nobody matched. Grouping the two is what makes an accuracy figure lie.
+    too_small: bool = False
+    # None means "no gallery match cleared the threshold" -- unless ``too_small``, in
+    # which case the gallery was never searched.
     employee_code: str | None = None
     # Best cosine similarity found, kept even when it lost to the threshold: an
     # under-threshold near-miss is the useful number when tuning that threshold.
     confidence: float = 0.0
+    # Which person this face was judged to be across scans, when a tracker is in
+    # play. None means no tracker -- the browser debug route, and every test that
+    # builds a pipeline without one.
+    track_id: int | None = None
+    # How far the best employee beat the runner-up. Kept whether or not the match was
+    # accepted, for the same reason as `confidence`. 0.0 also means "not measured" --
+    # no search ran, or the gallery holds one employee and there is no runner-up.
+    margin: float = 0.0
 
 
 class FrameContext(BaseModel):
@@ -105,6 +118,14 @@ class FaceProcessConfig(BaseModel):
     palm_score_threshold: float = 0.5
     face_score_threshold: float = 0.5
     recognition_threshold: float = 0.6
+    # Minimum gap between the top employee and the runner-up. 0.0 disables the gate,
+    # which is the default everywhere until a FAR/FRR sweep picks a value.
+    recognition_margin: float = 0.0
+    # How many scans of one track must agree on the same employee before attendance is
+    # recorded. 1 publishes on the first accepted scan, which is today's behaviour.
+    track_confirm_scans: int = 1
+    # Scans a track survives without being seen before it is dropped.
+    track_max_age_scans: int = 3
     # The looking gate. See ``app/core/face_processing/gaze.py``; pitch is deliberately
     # not gated, because a high-mounted camera sees every face pitched.
     looking_max_yaw_ratio: float = 0.35
@@ -116,3 +137,6 @@ class FaceProcessConfig(BaseModel):
     # too few pixels to survive BlazePalm's 192x192 input -- see ``scan_regions``.
     palm_scan_grid: int = 1
     palm_scan_overlap: float = 0.2
+    # Minimum face width in source pixels for recognition to be attempted. 0 attempts
+    # every face, which is what the tests and the browser debug route want.
+    min_face_pixels: int = 0

@@ -99,6 +99,9 @@ def _events(faces: list[FaceResult], ctx: FrameContext) -> list[AttendanceEvent]
             camera_id=ctx.camera_id,
             timestamp=ctx.captured_at,
             confidence=face.confidence,
+            # Declared in the payload contract since it was written and never once
+            # assigned until tracking existed to assign it.
+            track_id=face.track_id,
         )
         for face in faces
         if face.employee_code

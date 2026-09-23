@@ -21,6 +21,23 @@ SCAN_SECONDS = Histogram(
 RECOGNITIONS = Counter(
     "recognitions_total", "Faces matched to an employee", ["employee_code"]
 )
+TRACKS_CONFIRMED = Counter(
+    "tracks_confirmed_total", "People whose identity enough scans agreed on"
+)
+TRACKS_UNRESOLVED = Counter(
+    "tracks_unresolved_total",
+    "People who stood in front of the camera and were never identified",
+    ["reason"],
+)
+TRACK_SCANS_TO_CONFIRM = Histogram(
+    "track_scans_to_confirm",
+    "Scans a person was present for before attendance was recorded",
+    buckets=(1, 2, 3, 4, 5, 8, 12),
+)
+FACES_TOO_SMALL = Counter(
+    "faces_too_small_total",
+    "Faces that raised a hand but were under MIN_FACE_PIXELS, so were never embedded",
+)
 ATTENDANCE_PUBLISHED = Counter(
     "attendance_published_total", "Attendance events published to the broker"
 )

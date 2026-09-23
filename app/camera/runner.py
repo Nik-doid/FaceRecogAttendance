@@ -52,6 +52,7 @@ from app.schemas.face_processing import (
 from app.services.attendance_reporter.base import AttendanceReporter
 from app.services.duplicate_suppressor import DuplicateSuppressor
 from app.services.face_recognition.process import FaceRecognitionProcess
+from app.services.face_recognition.tracker import FaceTracker
 from app.workers.camera.reader import CameraReader
 
 log = get_logger(__name__)
@@ -202,6 +203,14 @@ class CameraRunner:
 
     async def _loop(self) -> None:
         state = self._deps.state
+        # The gallery the pipeline was built against. `_build_process` reads
+        # `GalleryHandle.current`, which is EMPTY_GALLERY for the first few minutes:
+        # `app/main.py` starts the enrolment thread and this runner back to back, so a
+        # process built once at boot holds `recognizer is None` and
+        # `ArcFaceRecognition._match` returns every face unmatched for the life of the
+        # process. Rebuilding when the handle swaps is what makes the handle's whole
+        # reason for existing reach the always-on path.
+        gallery = self._deps.gallery.current
         process = self._build_process()
         reader = None
         backoff = MIN_BACKOFF_SECONDS
@@ -211,6 +220,7 @@ class CameraRunner:
         last_scan = 0.0
         scan_started = 0.0
         scan_interval = max(0.05, self._deps.settings.camera_scan_interval_ms / 1000.0)
+        preview_width = self._deps.settings.preview_frame_width
 
         log.info("camera runner started", extra={"camera_id": self._deps.settings.camera_id})
         try:
@@ -249,14 +259,26 @@ class CameraRunner:
                     reader = None
                     continue
 
+                current_gallery = self._deps.gallery.current
+                if current_gallery is not gallery:
+                    # Identity, not equality: `swap` publishes a new object, and
+                    # rebuilding is only correct when it is genuinely a new one.
+                    gallery = current_gallery
+                    process = self._build_process()
+                    log.info(
+                        "recognition gallery swapped in",
+                        extra={
+                            "event": "gallery_swapped",
+                            "employees": gallery.employees,
+                        },
+                    )
+
                 state.frames += 1
                 FRAMES_PROCESSED.inc()
                 state.last_frame_at = datetime.now(UTC)
-                ok, jpeg = cv2.imencode(
-                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
-                )
-                if ok:
-                    self._deps.hub.publish_frame(jpeg.tobytes())
+                jpeg_bytes = encode_jpeg(frame, max_width=preview_width)
+                if jpeg_bytes is not None:
+                    self._deps.hub.publish_frame(jpeg_bytes)
 
                 if detecting is not None and detecting.done():
                     SCAN_SECONDS.observe(time.monotonic() - scan_started)
@@ -315,12 +337,24 @@ class CameraRunner:
                 looking_max_roll_degrees=settings.looking_max_roll_degrees,
                 palm_search_margin=settings.palm_search_margin,
                 recognition_threshold=settings.recognition_threshold,
+                recognition_margin=settings.recognition_margin,
+                track_confirm_scans=settings.track_confirm_scans,
+                track_max_age_scans=settings.track_max_age_scans,
+                min_face_pixels=settings.min_face_pixels,
             ),
             self._deps.models(),
             self._deps.gallery.current,
             settings.models_dir,
             reporter=self._deps.reporter,
             suppressor=self._deps.suppressor,
+            # The runner owns the tracker because track identity is per camera stream.
+            # A fresh one per pipeline is correct: the pipeline is rebuilt when the
+            # gallery swaps, and carrying half-voted tracks across a gallery change
+            # would mean voting on two different galleries' answers.
+            tracker=FaceTracker(
+                confirm_scans=settings.track_confirm_scans,
+                max_age_scans=settings.track_max_age_scans,
+            ),
         )
 
     def _harvest(
@@ -344,6 +378,7 @@ def _default_reader(settings: Settings) -> CameraReader:
         source=settings.camera_source,
         device_index=settings.camera_device_index,
         max_width=settings.max_frame_width,
+        min_width=settings.min_frame_width,
     )
 
 
@@ -369,16 +404,34 @@ def detection_payload(result: FrameResult, shape: tuple[int, int]) -> dict[str, 
                 "bbox": [round(v, 1) for v in face.bbox],
                 "score": round(face.score, 3),
                 "looking": face.looking,
+                # Distinct from employee_code being None: the gallery was never
+                # searched, so the page must not render this as "unknown person".
+                "too_small": face.too_small,
                 "yaw": face.yaw_ratio,
                 "palm": face.palm,
+                "track_id": face.track_id,
                 "employee_code": face.employee_code,
                 "confidence": round(face.confidence, 3),
+                # The gap to the runner-up. A high confidence with a near-zero margin
+                # is the tell that the gallery cannot separate these two people.
+                "margin": round(face.margin, 3),
             }
             for face in result.faces
         ],
     }
 
 
-def encode_jpeg(frame: np.ndarray) -> bytes | None:
+def encode_jpeg(frame: np.ndarray, *, max_width: int = 0) -> bytes | None:
+    """JPEG for a viewer, optionally downscaled first.
+
+    Downscaling here and not before detection is the whole point: the encode is
+    per-frame at ~30fps while detection is per-scan at ~1Hz, so the preview is where
+    the cost lives and the pipeline is where the pixels matter. Box alignment survives
+    because `detection_payload` reports the *detection* frame's dimensions and the page
+    scales by those.
+    """
+    if max_width and frame.shape[1] > max_width:
+        height = round(frame.shape[0] * max_width / frame.shape[1])
+        frame = cv2.resize(frame, (max_width, height), interpolation=cv2.INTER_AREA)
     ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
     return jpeg.tobytes() if ok else None

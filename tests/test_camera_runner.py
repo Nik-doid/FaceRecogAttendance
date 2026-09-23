@@ -11,16 +11,28 @@ import threading
 import time
 from datetime import UTC, datetime
 
+import cv2
 import numpy as np
 import pytest
 
+from app.ai.faiss.index import FaceIndex
 from app.camera.hub import FrameHub
-from app.camera.runner import CameraRunner, CameraRunnerAlreadyRunningError
+from app.camera.runner import CameraRunner, CameraRunnerAlreadyRunningError, encode_jpeg
 from app.config.settings import Settings
-from app.core.face_processing.gallery import GalleryHandle
+from app.core.face_processing.gallery import EMBEDDING_DIM, Gallery, GalleryHandle
 from app.schemas.face_processing import FrameContext, FrameResult, PalmResult
 
 NO_PALM = PalmResult(detected=False, score=0.0)
+
+
+def _gallery(employees: int = 1) -> Gallery:
+    """A gallery that is a distinct object from EMPTY_GALLERY; contents do not matter."""
+    return Gallery(
+        index=FaceIndex(dim=EMBEDDING_DIM),
+        recognizer=None,
+        employees=employees,
+        photos=employees,
+    )
 
 
 class FakeReader:
@@ -32,10 +44,14 @@ class FakeReader:
         opens: bool = True,
         fail_after: int | None = None,
         raise_after: int | None = None,
+        width: int = 160,
+        height: int = 120,
     ) -> None:
         self._opens = opens
         self._fail_after = fail_after
         self._raise_after = raise_after
+        self._width = width
+        self._height = height
         self.reads = 0
         self.opened = 0
         self.closed = 0
@@ -50,7 +66,7 @@ class FakeReader:
             raise OSError("rtsp socket died")
         if self._fail_after is not None and self.reads > self._fail_after:
             return None
-        return np.zeros((120, 160, 3), np.uint8)
+        return np.zeros((self._height, self._width, 3), np.uint8)
 
     def close(self) -> None:
         self.closed += 1
@@ -61,6 +77,7 @@ class FakeProcess:
 
     def __init__(self, *, raises: bool = False) -> None:
         self.contexts: list[FrameContext | None] = []
+        self.frames: list[np.ndarray] = []
         self.calls = 0
         self._raises = raises
         self.entered = threading.Event()
@@ -70,6 +87,7 @@ class FakeProcess:
     ) -> FrameResult:
         self.calls += 1
         self.contexts.append(ctx)
+        self.frames.append(frame)
         self.entered.set()
         if self._raises:
             raise RuntimeError("bad frame")
@@ -298,3 +316,135 @@ def test_state_reports_progress() -> None:
     assert state["scans"] > 0
     assert state["started_at"] is not None
     assert state["running"] is False
+
+
+# --- the gallery the pipeline recognises against -----------------------------
+def test_a_gallery_built_after_start_reaches_the_pipeline() -> None:
+    """The runner must follow ``GalleryHandle``, not snapshot it once at boot.
+
+    ``app/main.py`` starts the enrolment thread and this runner back to back, so the
+    gallery is empty for the first few minutes of every boot. A process built once
+    against that snapshot holds ``recognizer is None``, and
+    ``ArcFaceRecognition._match`` then returns every face unmatched -- confidence
+    exactly 0.00, for the life of the process -- while ``/webcam/ws``, which builds
+    its pipeline per connection, recognises perfectly. That asymmetry is the bug.
+    """
+    reader = FakeReader()
+    handle = GalleryHandle()
+    built: list[FakeProcess] = []
+
+    def factory() -> FakeProcess:
+        process = FakeProcess()
+        built.append(process)
+        return process
+
+    settings = Settings(_env_file=None, camera_id="cam-test", camera_scan_interval_ms=50)
+    runner = CameraRunner(
+        settings,
+        models=lambda: None,  # type: ignore[arg-type,return-value]
+        gallery=handle,
+        hub=FrameHub(),
+        reader_factory=lambda: reader,
+        process_factory=factory,
+    )
+    runner.start()
+    try:
+        assert _wait(lambda: len(built) == 1)
+        assert _wait(lambda: built[0].calls > 0)
+
+        handle.swap(_gallery(employees=3))
+        assert _wait(lambda: len(built) == 2), "the swapped-in gallery never reached the pipeline"
+        assert _wait(lambda: built[1].calls > 0)
+    finally:
+        runner.stop(timeout=5)
+
+
+def test_the_pipeline_is_not_rebuilt_while_the_gallery_is_unchanged() -> None:
+    """Rebuilding per frame would reload a 3.7 MiB palm net thirty times a second."""
+    reader = FakeReader()
+    built: list[FakeProcess] = []
+
+    def factory() -> FakeProcess:
+        process = FakeProcess()
+        built.append(process)
+        return process
+
+    settings = Settings(_env_file=None, camera_id="cam-test", camera_scan_interval_ms=50)
+    runner = CameraRunner(
+        settings,
+        models=lambda: None,  # type: ignore[arg-type,return-value]
+        gallery=GalleryHandle(),
+        hub=FrameHub(),
+        reader_factory=lambda: reader,
+        process_factory=factory,
+    )
+    runner.start()
+    try:
+        assert _wait(lambda: reader.reads > 10)
+        assert len(built) == 1
+    finally:
+        runner.stop(timeout=5)
+
+
+# --- the preview is not the pipeline -----------------------------------------
+def test_the_preview_is_downscaled_while_detection_keeps_the_full_frame() -> None:
+    """The encode is per-frame at ~30fps; detection is per-scan at ~1Hz.
+
+    So the preview is where the cost lives and the pipeline is where the pixels
+    matter. ArcFace crops from the frame `process_frames` is handed, so downscaling
+    that to save encode time would throw away the face pixels this whole exercise is
+    about.
+    """
+    reader = FakeReader(width=1920, height=1080)
+    process = FakeProcess()
+    hub = FrameHub()
+    runner = _runner(reader, process, hub, preview_frame_width=640)
+    runner.start()
+    try:
+        assert _wait(lambda: process.calls > 0)
+        assert process.frames[0].shape[:2] == (1080, 1920), "detection lost resolution"
+
+        jpeg = hub.snapshot().jpeg
+        assert jpeg is not None
+        decoded = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        assert decoded.shape[:2] == (360, 640)
+    finally:
+        runner.stop(timeout=5)
+
+
+def test_the_reported_dimensions_are_the_detection_frames() -> None:
+    """The page scales boxes by these, so they must describe the frame boxes came from."""
+    reader = FakeReader(width=1920, height=1080)
+    process = FakeProcess()
+    hub = FrameHub()
+    runner = _runner(reader, process, hub, preview_frame_width=640)
+    runner.start()
+    try:
+        assert _wait(lambda: hub.snapshot().detection is not None)
+        payload = hub.snapshot().detection
+        assert payload is not None
+        assert (payload["width"], payload["height"]) == (1920, 1080)
+    finally:
+        runner.stop(timeout=5)
+
+
+def test_encode_jpeg_only_shrinks_what_is_too_wide() -> None:
+    tall = np.zeros((1080, 1920, 3), np.uint8)
+    small = np.zeros((240, 320, 3), np.uint8)
+
+    wide = cv2.imdecode(
+        np.frombuffer(encode_jpeg(tall, max_width=640) or b"", np.uint8), cv2.IMREAD_COLOR
+    )
+    assert wide.shape[:2] == (360, 640)
+
+    # Already inside the limit: untouched, never upscaled.
+    left = cv2.imdecode(
+        np.frombuffer(encode_jpeg(small, max_width=640) or b"", np.uint8), cv2.IMREAD_COLOR
+    )
+    assert left.shape[:2] == (240, 320)
+
+    # 0 disables the downscale entirely.
+    full = cv2.imdecode(
+        np.frombuffer(encode_jpeg(tall, max_width=0) or b"", np.uint8), cv2.IMREAD_COLOR
+    )
+    assert full.shape[:2] == (1080, 1920)

@@ -143,9 +143,10 @@ class FaceRecognitionHandlerFactory:
         face_recognizer: FaceRecognizerType,
         gallery: Gallery,
         score_threshold: float,
+        margin_threshold: float = 0.0,
     ) -> BaseFaceRecognition:
         if face_recognizer == FaceRecognizerType.ARCFACE:
-            return ArcFaceRecognition(gallery, score_threshold)
+            return ArcFaceRecognition(gallery, score_threshold, margin_threshold)
 
         raise StepNotImplementedError(f"Unknown face recognizer: {face_recognizer}")
 
@@ -159,6 +160,7 @@ class FaceRecognitionDispatcher:
         face_recognizer: FaceRecognizerType,
         gallery: Gallery,
         score_threshold: float,
+        margin_threshold: float = 0.0,
     ) -> BaseFaceRecognition:
         """Dispatch the face recognition handler for the given recognizer type.
 
@@ -166,10 +168,14 @@ class FaceRecognitionDispatcher:
             face_recognizer (FaceRecognizerType)
             gallery (Gallery): the enrolled employees, already embedded.
             score_threshold (float): minimum cosine similarity to accept a match.
+            margin_threshold (float): minimum gap between the best employee and the
+                runner-up. 0.0 disables the gate.
         Returns:
             BaseFaceRecognition: face recognition handler instance
         """
-        recognize_inst = cls.handler.create_handler(face_recognizer, gallery, score_threshold)
+        recognize_inst = cls.handler.create_handler(
+            face_recognizer, gallery, score_threshold, margin_threshold
+        )
         return recognize_inst
 
 
